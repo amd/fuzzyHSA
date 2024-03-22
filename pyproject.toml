@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools", "wheel", "pybind11"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fuzzyHSA"
+version = "0.1.0"
+description = "A Python HSA Fuzzer"
+authors = [{name = "Zachary Streeter"}]
+readme = "README.md"
+license = {file = "LICENSE"}
+
+[project.entry-points.console_scripts]
+fuzzyHSA = "fuzzyHSA.fuzzer:main"
