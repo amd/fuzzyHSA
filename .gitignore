@@ -1,3 +1,4 @@
 build/
 src/*.so
 src/fuzzyHSA/__pycache__
+*.hsaco

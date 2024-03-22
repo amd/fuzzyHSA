@@ -10,18 +10,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from fuzzer_backend import KernelManager, HSAFuzzer
-from .utils import create_cache_directory
+from pathlib import Path
 
-
-def main():
-    create_cache_directory()
-
-    kernel_manager = KernelManager()
-    kernel_manager.compile_kernel_to_hsaco("vector_add")
-    fuzzer = HSAFuzzer("vector_add.hsaco")
-    fuzzer.allocate_memory(1024)
-
-
-if __name__ == "__main__":
-    main()
+def create_cache_directory():
+    cache_dir = Path.home() / '.cache' / 'fuzzyHSA'
+    cache_dir.mkdir(parents=True, exist_ok=True)

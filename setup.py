@@ -16,9 +16,9 @@ import pybind11
 
 os.environ["CC"] = "hipcc"
 
-cpp_fuzzer_module = Extension(
-    "cpp_fuzzer",
-    sources=["src/cpp/fuzzer.cpp"],
+fuzzer_backend = Extension(
+    "fuzzer_backend",
+    sources=["src/cpp/HSAFuzzer.cpp"],
     include_dirs=[
         pybind11.get_include(),
         "/opt/rocm/include",
@@ -34,7 +34,7 @@ setup(
     name="fuzzyHSA",
     version="0.1.0",
     author="Zachary Streeter",
-    description="A Python HSA Fuzzer using Pybind11",
-    ext_modules=[cpp_fuzzer_module],
+    description="A Python HSA Fuzzer",
+    ext_modules=[fuzzer_backend],
     setup_requires=["pybind11>=2.5.0"],
 )
