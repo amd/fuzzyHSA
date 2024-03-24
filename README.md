@@ -9,6 +9,7 @@ Analysis of [Tinygrad KFD and HSA backends](https://gist.github.com/fxkamd/ffd02
 ## TODO
 
 * Use kfd_ioctl instead
+* use ctypes to talk to c code via python instead of pybind11
 * Rename project to fuzzyDriver
 
 ## License
