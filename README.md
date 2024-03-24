@@ -8,7 +8,8 @@ Analysis of [Tinygrad KFD and HSA backends](https://gist.github.com/fxkamd/ffd02
 
 ## TODO
 
-* Need to create cache directory for generated .hsaco kernels to live, for example `$HOME/.cache/fuzzyHSA`. Then point fuzzyHSA API there
+* Use kfd_ioctl instead
+* Rename project to fuzzyDriver
 
 ## License
 
