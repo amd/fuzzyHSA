@@ -18,12 +18,13 @@ Analysis of [Tinygrad KFD and HSA backends](https://gist.github.com/fxkamd/ffd02
 
 ## TODO
 
-* Use kfd_ioctl instead
-* use ctypes to talk to c code via python instead of pybind11
+* Use kfd_ioctl to create kfd operations in kfd/ops.py.
+* Utilize the kfd/ops.py in default fuzz tests. 
+* Have ability to pass in user defined config for a dynamic fuzz test.
 
 ## Acknowledgments
 
-This project would like to thank the [tinycorp](https://tinygrad.org/) in particular the [tinygrad](https://github.com/tinygrad/tinygrad) framework for their effort pushing the boundaries. Please go give it a try/star!
+This project would like to thank the [tinycorp](https://tinygrad.org/), in particular the [tinygrad](https://github.com/tinygrad/tinygrad) framework for their effort pushing the boundaries. Please go give it a try/star!
 
 ## License
 
