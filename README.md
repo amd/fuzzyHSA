@@ -6,11 +6,24 @@ Status report of various issues reported by Tinycorp and status of fixes are tra
 
 Analysis of [Tinygrad KFD and HSA backends](https://gist.github.com/fxkamd/ffd02d66a2863e444ec208ea4f3adc48) 
 
+## Installation
+
+1. pip install .
+2. bash autogen_stubs.sh kfd
+
+## Uninstalling
+
+1. pip uninstall fuzzyHSA
+2. bash autogen_stubs.sh clean
+
 ## TODO
 
 * Use kfd_ioctl instead
 * use ctypes to talk to c code via python instead of pybind11
-* Rename project to fuzzyDriver
+
+## Acknowledgments
+
+This project would like to thank the [tinycorp](https://tinygrad.org/) in particular the [tinygrad](https://github.com/tinygrad/tinygrad) framework for their effort pushing the boundaries. Please go give it a try/star!
 
 ## License
 
