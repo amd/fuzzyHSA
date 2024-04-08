@@ -10,12 +10,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse
 from .utils import check_generated_files
+
 
 def main():
 
     check_generated_files()
+
 
 if __name__ == "__main__":
     main()

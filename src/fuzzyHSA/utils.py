@@ -13,12 +13,16 @@
 from pathlib import Path
 import importlib.util
 
+
 def check_generated_files():
-    package_path = Path(importlib.util.find_spec('fuzzyHSA').origin).parent
-    kfd_file_path = package_path / 'kfd' / 'kfd.py'
+    package_path = Path(importlib.util.find_spec("fuzzyHSA").origin).parent
+    kfd_file_path = package_path / "kfd" / "kfd.py"
     if not kfd_file_path.exists():
-        raise RuntimeError("kfd.py not found. Please run autogen_stub.sh to generate it.")
+        raise RuntimeError(
+            "kfd.py not found. Please run autogen_stub.sh to generate it."
+        )
+
 
 def create_cache_directory():
-    cache_dir = Path.home() / '.cache' / 'fuzzyHSA'
+    cache_dir = Path.home() / ".cache" / "fuzzyHSA"
     cache_dir.mkdir(parents=True, exist_ok=True)

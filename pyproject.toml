@@ -10,5 +10,10 @@ authors = [{name = "Zachary Streeter"}]
 readme = "README.md"
 license = {file = "LICENSE"}
 
+[project.optional-dependencies]
+testing = [
+    "pytest>=6.0",
+]
+
 [project.entry-points.console_scripts]
 fuzzyHSA = "fuzzyHSA.fuzzer:main"
