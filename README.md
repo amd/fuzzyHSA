@@ -16,6 +16,11 @@ Analysis of [Tinygrad KFD and HSA backends](https://gist.github.com/fxkamd/ffd02
 1. bash autogen_stubs.sh clean=kfd
 2. pip uninstall fuzzyHSA
 
+## Testing
+
+1. pip install -e '.[testing]'
+2. python -m pytest test/
+
 ## TODO
 
 * Use kfd_ioctl to create kfd operations in kfd/ops.py.

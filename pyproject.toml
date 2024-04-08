@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fuzzyHSA"
 version = "0.1.0"
-description = "A Python HSA Fuzzer"
+description = "A Python HSA/KFD Fuzzer"
 authors = [{name = "Zachary Streeter"}]
 readme = "README.md"
 license = {file = "LICENSE"}

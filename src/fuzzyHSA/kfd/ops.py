@@ -11,12 +11,10 @@
 # limitations under the License.
 
 import os
-import ctypes
 import fcntl
-import errno
+import ctypes
 
-import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
-from .utils import node_sysfs_path  # Ensure this utility is properly defined elsewhere
+from .utils import ioctls_from_header
 
 
 class MemoryManager:
@@ -74,66 +72,46 @@ class MemoryManager:
             raise OSError("munmap failed")
 
 
-class KFDManager(MemoryManager):
-    """
-    A class for managing KFD devices, including IOCTL operations and memory mapping.
-    Inherits memory mapping functionality from MemoryManager.
-    """
-
-    @staticmethod
-    def ioctl(fd: int, cmd: int, arg: ctypes.Structure) -> ctypes.Structure:
-        """
-        Perform an ioctl operation.
-
-        Args:
-            fd: File descriptor of the device.
-            cmd: Ioctl command code.
-            arg: Argument structure for the command.
-
-        Returns:
-            The argument structure filled with any output data.
-        """
-        ret = fcntl.ioctl(fd, cmd, arg)
-        if ret != 0:
-            raise OSError(errno.errorcode[ret], os.strerror(ret))
-        return arg
-
-
-class KFDDevice:
-    def __init__(self, node_id: int, manager: KFDManager):
-        """
-        Initialize the KFD device.
-
-        Args:
-            node_id: The node ID for the KFD device.
-            manager: An instance of KFDManager for handling IOCTL and memory management.
-        """
+class KFDDevice(MemoryManager):
+    def __init__(self, node_id: int):
+        super().__init__()  # Initialize MemoryManager, if it has an __init__
+        self.kfd_ops = ioctls_from_header()  # Dynamically create ioctl operations
         self.fd = os.open("/dev/kfd", os.O_RDWR | os.O_CLOEXEC)
         self.node_id = node_id
-        self.manager = manager  # Store the KFDManager instance
 
-    def close(self) -> None:
+    def __enter__(self):
+        """Enable use of 'with' statement for automatic resource management."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Ensure the device is closed when exiting a 'with' block."""
+        self.close()
+
+    def close(self):
         """Close the device file descriptor."""
         os.close(self.fd)
 
-    def create_queue(self) -> None:
+    def ioctl(self, cmd: int, arg: ctypes.Structure) -> ctypes.Structure:
         """
-        Create a queue on the KFD device.
-
-        This method needs to be adapted based on actual IOCTL commands and their expected parameters.
+        Perform an ioctl operation, wrapping the static method functionality.
+        Automatically uses the device's file descriptor.
         """
-        # Create the structure for the IOCTL command
-        cmd = kfd.struct_kfd_ioctl_create_queue(queue_id=self.node_id)
+        try:
+            ret = fcntl.ioctl(self.fd, cmd, arg)
+            return arg
+        except IOError as e:
+            raise OSError(f"IOCTL operation failed: {e}")
 
-        # Use the manager to submit the IOCTL command
-        self.manager.ioctl(self.fd, kfd.AMDKFD_IOC_CREATE_QUEUE, cmd)
-
-    def submit_command(self, cmd: ctypes.Structure) -> None:
+    def create_queue(self):
         """
-        Submit an arbitrary IOCTL command.
-
-        Args:
-            cmd: The IOCTL command structure.
+        Create a queue on the KFD device using IOCTL commands.
         """
-        # Use the manager to submit the IOCTL command
-        self.manager.ioctl(self.fd, 0xC008BF00, cmd)  # Placeholder IOCTL command
+        # Example assumes existence of a method to properly set up the command structure
+        cmd = self.kfd_ops.create_queue_struct(self.node_id)  # Hypothetical method
+        self.ioctl(self.kfd_ops.AMDKFD_IOC_CREATE_QUEUE, cmd)
+
+    # Example: Method to allocate memory, assuming such functionality is common
+    def allocate_memory(self, size: int):
+        """Allocate memory on the device."""
+        # This is a placeholder. Implementation depends on your MemoryManager and KFD specifics.
+        pass

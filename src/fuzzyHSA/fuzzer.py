@@ -11,12 +11,10 @@
 # limitations under the License.
 
 from .utils import check_generated_files
-from fuzzyHSA.kfd.kfd_manager import KFDManager, KFDDevice
-import fuzzyHSA.kfd.kfd as kfd
+from fuzzyHSA.kfd.ops import KFDDevice
 
 
 def main():
-
     check_generated_files()
 
 
