@@ -18,7 +18,7 @@ import fcntl
 import errno
 from typing import Type, Any
 
-import kfd
+import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
 
 
 def node_sysfs_path(node_id, file):

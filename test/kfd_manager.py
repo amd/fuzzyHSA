@@ -16,8 +16,9 @@ import ctypes
 from unittest.mock import patch
 import pytest
 
-from src.fuzzyHSA.kfd.kfd_manager import KFDManager, KFDDevice
-import src.fuzzyHSA.kfd.kfd as kfd
+from fuzzyHSA.kfd.kfd_manager import KFDManager, KFDDevice
+import fuzzyHSA.kfd.kfd as kfd
+
 
 @pytest.fixture
 def kfd_manager():
@@ -45,12 +46,8 @@ def test_memory_management(mock_cdll, kfd_manager):
 @patch("fuzzyHSA.kfd.kfd_manager.fcntl.ioctl")
 def test_ioctl(mock_ioctl, kfd_manager):
     mock_ioctl.return_value = 0
-    cmd_struct = kfd.struct_kfd_ioctl_create_queue(
-        queue_id=0
-    )
-    kfd_manager.ioctl(
-        0, kfd.AMDKFD_IOC_CREATE_QUEUE, cmd_struct
-    )
+    cmd_struct = kfd.struct_kfd_ioctl_create_queue(queue_id=0)
+    kfd_manager.ioctl(0, kfd.AMDKFD_IOC_CREATE_QUEUE, cmd_struct)
     mock_ioctl.assert_called_once()
 
 

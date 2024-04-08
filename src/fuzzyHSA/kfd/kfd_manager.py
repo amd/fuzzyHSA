@@ -15,8 +15,7 @@ import ctypes
 import fcntl
 import errno
 
-# Assuming kfd.py is properly defined with necessary IOCTL commands and structures
-import kfd
+import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
 from .utils import node_sysfs_path  # Ensure this utility is properly defined elsewhere
 
 
