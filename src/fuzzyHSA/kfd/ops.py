@@ -13,6 +13,7 @@
 import os
 import fcntl
 import ctypes
+import inspect
 
 from .utils import ioctls_from_header
 
@@ -73,28 +74,76 @@ class MemoryManager:
 
 
 class KFDDevice(MemoryManager):
+    """
+    Represents a Kernel Fusion Driver (KFD) device, providing a high-level interface
+    for interacting with the device through IOCTL commands and memory management operations.
+
+    Attributes:
+        KFD_IOCTL (object): An object containing dynamically created IOCTL operations.
+        fd (int): File descriptor for the /dev/kfd device, allowing direct communication with the device.
+        node_id (int): The unique identifier for the KFD device node.
+
+    Methods:
+        __enter__, __exit__: Enable resource management using the 'with' statement.
+        close(): Closes the device file descriptor.
+        ioctl(cmd, arg): Performs an IOCTL operation on the device.
+        create_queue(): Creates a queue on the KFD device using specific IOCTL commands.
+        allocate_memory(size): Allocates memory on the device (placeholder method).
+        print_ioctl_functions(): Prints the names of all generated IOCTL functions.
+    """
+
     def __init__(self, node_id: int):
-        super().__init__()  # Initialize MemoryManager, if it has an __init__
-        self.kfd_ops = ioctls_from_header()  # Dynamically create ioctl operations
+        """
+        Initializes a new KFDDevice instance.
+
+        Args:
+            node_id (int): The node ID for the KFD device. This ID is used to identify
+                           the device within the system.
+        """
+        super().__init__()
+        self.KFD_IOCTL = ioctls_from_header()  # Load IOCTL commands dynamically
+        print(self.KFD_IOCTL)
         self.fd = os.open("/dev/kfd", os.O_RDWR | os.O_CLOEXEC)
         self.node_id = node_id
 
     def __enter__(self):
-        """Enable use of 'with' statement for automatic resource management."""
+        """
+        Enables the use of 'with' statement for this class, allowing for automatic
+        resource management.
+
+        Returns:
+            self (KFDDevice): The instance itself.
+        """
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Ensure the device is closed when exiting a 'with' block."""
+        """
+        Ensures the device is properly closed when exiting a 'with' block.
+
+        Args:
+            exc_type: Exception type.
+            exc_val: Exception value.
+            exc_tb: Exception traceback.
+        """
         self.close()
 
     def close(self):
-        """Close the device file descriptor."""
+        """Closes the device file descriptor, freeing up system resources."""
         os.close(self.fd)
 
     def ioctl(self, cmd: int, arg: ctypes.Structure) -> ctypes.Structure:
         """
-        Perform an ioctl operation, wrapping the static method functionality.
-        Automatically uses the device's file descriptor.
+        Performs an IOCTL operation using the device's file descriptor.
+
+        Args:
+            cmd (int): The IOCTL command to execute.
+            arg (ctypes.Structure): The argument structure passed to the IOCTL command.
+
+        Returns:
+            ctypes.Structure: The potentially modified argument structure after the IOCTL call.
+
+        Raises:
+            OSError: If the IOCTL operation fails.
         """
         try:
             ret = fcntl.ioctl(self.fd, cmd, arg)
@@ -104,14 +153,43 @@ class KFDDevice(MemoryManager):
 
     def create_queue(self):
         """
-        Create a queue on the KFD device using IOCTL commands.
-        """
-        # Example assumes existence of a method to properly set up the command structure
-        cmd = self.kfd_ops.create_queue_struct(self.node_id)  # Hypothetical method
-        self.ioctl(self.kfd_ops.AMDKFD_IOC_CREATE_QUEUE, cmd)
+        Creates a compute queue on the KFD device, utilizing IOCTL commands.
 
-    # Example: Method to allocate memory, assuming such functionality is common
+        This method prepares and sends the necessary command structure to the device
+        to initialize a new compute queue. Details such as queue type and properties
+        are determined internally.
+
+        Raises:
+            OSError: If the IOCTL operation to create the queue fails.
+        """
+        # This assumes the existence of a create_queue method within the KFD_IOCTL object
+        # and may need adjustment based on actual implementation.
+        cmd = self.KFD_IOCTL.create_queue(
+            self.node_id
+        )  # Placeholder for command structure preparation
+        self.ioctl(self.KFD_IOCTL.AMDKFD_IOC_CREATE_QUEUE, cmd)
+
     def allocate_memory(self, size: int):
-        """Allocate memory on the device."""
-        # This is a placeholder. Implementation depends on your MemoryManager and KFD specifics.
+        """
+        Allocates memory on the KFD device. Placeholder for demonstration.
+
+        Args:
+            size (int): The size of the memory to allocate in bytes.
+
+        Returns:
+            A reference or pointer to the allocated memory. Actual return type and mechanism
+            depend on the implementation of memory management within the device context.
+        """
+        # TODO:
         pass
+
+    def print_ioctl_functions(self):
+        """
+        Prints the names of all IOCTL functions generated by the ioctls_from_header function.
+        """
+        print("Available IOCTL Functions:")
+        for func_name in dir(self.KFD_IOCTL):
+            if callable(
+                getattr(self.KFD_IOCTL, func_name)
+            ) and not func_name.startswith("__"):
+                print(f"  - {func_name}")

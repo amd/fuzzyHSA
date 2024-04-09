@@ -75,13 +75,14 @@ def ioctls_from_header() -> Any:
     Returns:
         A dynamically created class instance with ioctl functions as methods.
     """
-    pattern = r"# (AMDKFD_IOC_[A-Z0-9_]+)\s=\s_(IOW?R?).*\((0x[0-9a-fA-F]+),\s+struct\s([A-Za-z0-9_]+)\s+\)"
+    pattern = r"# (AMDKFD_IOC_[A-Z0-9_]+) = (_IOWR?)\('K',\s*nr,\s*type\) \(\s*(0x[0-9a-fA-F]+)\s*,\s*struct\s+([A-Za-z0-9_]+)\s*\) # macro"
     matches = re.findall(pattern, pathlib.Path(kfd.__file__).read_text(), re.MULTILINE)
-    idirs = {"IOW": 1, "IOR": 2, "IOWR": 3}
+    print(matches)
+    idirs = {"_IOW": 1, "_IOR": 2, "_IOWR": 3}
     fxns = {
         name.replace("AMDKFD_IOC_", "").lower(): functools.partial(
             kfd_ioctl, idirs[idir], int(nr, 16), getattr(kfd, f"struct_{sname}")
         )
         for name, idir, nr, sname in matches
     }
-    return type("KIO", (object,), fxns)()
+    return type("KFD_IOCTL", (object,), fxns)()
