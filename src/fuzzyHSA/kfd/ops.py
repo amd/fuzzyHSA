@@ -13,9 +13,11 @@
 import os
 import fcntl
 import ctypes
-import inspect
+import pathlib
+from posix import O_RDWR
 
-from .utils import ioctls_from_header
+import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
+from .utils import ioctls_from_header, is_usable_gpu
 
 
 class MemoryManager:
@@ -92,19 +94,53 @@ class KFDDevice(MemoryManager):
         print_ioctl_functions(): Prints the names of all generated IOCTL functions.
     """
 
-    def __init__(self, node_id: int):
-        """
-        Initializes a new KFDDevice instance.
+    # class attributes
+    kfd = -1
+    gpus = None
 
-        Args:
-            node_id (int): The node ID for the KFD device. This ID is used to identify
-                           the device within the system.
-        """
-        super().__init__()
-        self.KFD_IOCTL = ioctls_from_header()  # Load IOCTL commands dynamically
-        print(self.KFD_IOCTL)
-        self.fd = os.open("/dev/kfd", os.O_RDWR | os.O_CLOEXEC)
-        self.node_id = node_id
+    @classmethod
+    def initialize_class(cls):
+        if cls.kfd == -1:
+            try:
+                cls.kfd = os.open("/dev/kfd", os.O_RDWR)
+                cls.gpus = [
+                    g.parent
+                    for g in pathlib.Path(
+                        "/sys/devices/virtual/kfd/kfd/topology/nodes"
+                    ).glob("*/gpu_id")
+                    if is_usable_gpu(g)
+                ]
+            except Exception as e:
+                cls.kfd = -1
+                raise RuntimeError(
+                    f"Failed to initialize KFDDevice class with error: {e}"
+                ) from e
+
+    def __init__(self, device: str):
+        # Ensure class-level initialization is done
+        self.__class__.initialize_class()
+
+        self.KFD_IOCTL = ioctls_from_header()
+        self.fd = os.open("/dev/fd", os.O_RDWR | os.os.O_CLOEXEC)
+        self.device_id = int(device.split(":")[1]) if ":" in device else 0
+        try:
+            gpu_path = self.__class__.gpus[self.device_id]
+            self.gpu_id = int((gpu_path / "gpu_id").read_text().strip())
+            properties = (gpu_path / "properties").read_text().strip().split("\n")
+            self.properties = {
+                line.split()[0]: int(line.split()[1]) for line in properties
+            }
+            self.drm_fd = os.open(
+                f"/dev/dri/renderD{self.properties['drm_render_minor']}", os.O_RDWR
+            )
+            target = self.properties["gfx_target_version"]
+            self.arch = (
+                f"gfx{target // 10000}{(target // 100) % 100:02x}{target % 100:02x}"
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to initialize KFDDevice instance with error: {e}"
+            ) from e
 
     def __enter__(self):
         """
@@ -153,21 +189,26 @@ class KFDDevice(MemoryManager):
 
     def create_queue(self):
         """
-        Creates a compute queue on the KFD device, utilizing IOCTL commands.
-
-        This method prepares and sends the necessary command structure to the device
-        to initialize a new compute queue. Details such as queue type and properties
-        are determined internally.
-
-        Raises:
-            OSError: If the IOCTL operation to create the queue fails.
+        Creates a compute queue on the KFD device, utilizing ioctl commands.
         """
-        # This assumes the existence of a create_queue method within the KFD_IOCTL object
-        # and may need adjustment based on actual implementation.
-        cmd = self.KFD_IOCTL.create_queue(
-            self.node_id
-        )  # Placeholder for command structure preparation
-        self.ioctl(self.KFD_IOCTL.AMDKFD_IOC_CREATE_QUEUE, cmd)
+        # TODO: setup all the necessary instance attributes to create this queue
+        queue_args = {
+            'ring_base_address': self.aql_ring.va_addr,
+            'ring_size': self.aql_ring.size,
+            'gpu_id': self.gpu_id,
+            'queue_type': kfd.KFD_IOC_QUEUE_TYPE_COMPUTE_AQL,
+            'queue_percentage': kfd.KFD_MAX_QUEUE_PERCENTAGE,
+            'queue_priority': kfd.KFD_MAX_QUEUE_PRIORITY,
+            'eop_buffer_address': self.eop_buffer.va_addr,
+            'eop_buffer_size': self.eop_buffer.size,
+            'ctx_save_restore_address': self.ctx_save_restore_address.va_addr,
+            'ctx_save_restore_size': self.ctx_save_restore_address.size,
+            'ctl_stack_size': 0xa000,
+            'write_pointer_address': self.gart_aql.va_addr + getattr(hsa.amd_queue_t, 'write_dispatch_id').offset,
+            'read_pointer_address': self.gart_aql.va_addr + getattr(hsa.amd_queue_t, 'read_dispatch_id').offset,
+        }
+
+        self.aql_queue = self.KFD_IOCTL.create_queue(KFDDevice.kfd, **queue_args)
 
     def allocate_memory(self, size: int):
         """

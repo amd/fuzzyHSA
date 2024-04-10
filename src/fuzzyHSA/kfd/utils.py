@@ -21,20 +21,12 @@ from typing import Type, Any
 import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
 
 
-def node_sysfs_path(node_id, file):
-    return f"/sys/devices/virtual/kfd/kfd/topology/nodes/{node_id}/{file}"
-
-
-def find_first_gpu_node():
-    i = 0
-    while True:
-        path = pathlib.Path(node_sysfs_path(i, "gpu_id"))
-        if not path.exists():
-            break
-        if int(path.read_text()) != 0:
-            return i
-        i += 1
-    raise RuntimeError("No GPUs found")
+def is_usable_gpu(gpu_id):
+    try:
+        with gpu_id.open() as f:
+            return int(f.read()) != 0
+    except OSError:
+        return False
 
 
 def kfd_ioctl(
@@ -77,7 +69,6 @@ def ioctls_from_header() -> Any:
     """
     pattern = r"# (AMDKFD_IOC_[A-Z0-9_]+) = (_IOWR?)\('K',\s*nr,\s*type\) \(\s*(0x[0-9a-fA-F]+)\s*,\s*struct\s+([A-Za-z0-9_]+)\s*\) # macro"
     matches = re.findall(pattern, pathlib.Path(kfd.__file__).read_text(), re.MULTILINE)
-    print(matches)
     idirs = {"_IOW": 1, "_IOR": 2, "_IOWR": 3}
     fxns = {
         name.replace("AMDKFD_IOC_", "").lower(): functools.partial(
