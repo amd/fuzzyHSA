@@ -29,7 +29,7 @@ Analysis of [Tinygrad KFD and HSA backends](https://gist.github.com/fxkamd/ffd02
 
 ## Acknowledgments
 
-This project would like to thank the [tinycorp](https://tinygrad.org/), in particular the [tinygrad](https://github.com/tinygrad/tinygrad) framework for their effort pushing the boundaries. Please go give it a try/star!
+This project would like to thank the [tinycorp](https://tinygrad.org/) for their efforts that push the boundaries. Please go checkout their deep-learning framework [tinygrad](https://github.com/tinygrad/tinygrad) and give it a star!
 
 ## License
 
