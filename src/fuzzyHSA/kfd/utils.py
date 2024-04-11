@@ -15,7 +15,7 @@ import pathlib
 import re
 import functools
 import fcntl
-import errno
+import os
 from typing import Type, Any
 
 import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
@@ -51,12 +51,19 @@ def kfd_ioctl(
     Returns:
         The structure filled with the results of the ioctl call.
     """
+    # TODO: ADD if DEBUG env flag here to print this
+    # print(f"Debug Info - FD: {fd}, IDIR: {idir}, NR: {nr}, GPU ID: {kwargs.get('gpu_id')}, Size: {kwargs.get('size')}")
     made = made_struct or user_struct(**kwargs)
-    ret = fcntl.ioctl(
-        fd, (idir << 30) | (ctypes.sizeof(made) << 16) | (ord("K") << 8) | nr, made
-    )
-    if ret != 0:
-        raise OSError(errno.errorcode[ret], f"ioctl returned {ret}")
+    if fd < 0 or os.fstat(fd).st_nlink == 0:
+        raise ValueError("Invalid or closed file descriptor")
+    try:
+        ret = fcntl.ioctl(
+            fd, (idir << 30) | (ctypes.sizeof(made) << 16) | (ord("K") << 8) | nr, made
+        )
+    except OSError as e:
+        raise RuntimeError(
+            f"IOCTL operation failed with system error: {os.strerror(e.errno)}"
+        ) from e
     return made
 
 

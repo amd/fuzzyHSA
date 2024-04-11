@@ -31,9 +31,7 @@ def kfd_device():
     with patch("fuzzyHSA.kfd.ops.os.open", return_value=3), patch(
         "pathlib.Path.open", mock_open(read_data="1")
     ), patch("fuzzyHSA.kfd.ops.KFDDevice.initialize_class") as mock_init_class:
-        # Provide a mocked device string
-        device_str = "KFD:1"
-        # Create an instance of KFDDevice with the mocked device string
+        device_str = "KFD:0"
         device = KFDDevice(device_str)
     return device
 

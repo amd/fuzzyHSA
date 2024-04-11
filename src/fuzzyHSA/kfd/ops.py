@@ -15,6 +15,7 @@ import fcntl
 import ctypes
 import pathlib
 from posix import O_RDWR
+from typing import Tuple, List, Any
 
 import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
 from .utils import ioctls_from_header, is_usable_gpu
@@ -39,7 +40,13 @@ class MemoryManager:
         self.libc.munmap.restype = ctypes.c_int
 
     def mmap(
-        self, size: int, prot: int, flags: int, fd: int, offset: int = 0
+        self,
+        size: int,
+        prot: int,
+        flags: int,
+        fd: int,
+        start_addr: ctypes.c_void_p = None,
+        offset: int = 0,
     ) -> ctypes.c_void_p:
         """
         Memory map a file or device.
@@ -49,14 +56,16 @@ class MemoryManager:
             prot: Desired memory protection of the mapping (e.g., PROT_READ | PROT_WRITE).
             flags: Determines the visibility of the updates to the mapping (e.g., MAP_SHARED).
             fd: File descriptor of the file or device to map.
+            start_addr: The desired starting address for the mapping. If None, the kernel chooses the address.
             offset: Offset from the beginning of the file/device to start the mapping.
 
         Returns:
             A pointer to the mapped memory region.
         """
-        addr = self.libc.mmap(None, size, prot, flags, fd, offset)
+        addr = self.libc.mmap(start_addr, size, prot, flags, fd, offset)
         if addr == ctypes.c_void_p(-1).value:
-            raise OSError("mmap failed")
+            errno = ctypes.get_errno()
+            raise OSError(errno, os.strerror(errno))
         return addr
 
     def munmap(self, addr: ctypes.c_void_p, size: int) -> None:
@@ -95,14 +104,19 @@ class KFDDevice(MemoryManager):
     """
 
     # class attributes
-    kfd = -1
-    gpus = None
+    kfd: int = -1
+    event_page: Any = (
+        None  # TODO: fix types in kfd, Optional[kfd.struct_kfd_ioctl_alloc_memory_of_gpu_args]
+    )
+    signals_page: Any = None
+    signal_number: int = 16
+    gpus: List[pathlib.Path] = []
 
     @classmethod
     def initialize_class(cls):
         if cls.kfd == -1:
             try:
-                cls.kfd = os.open("/dev/kfd", os.O_RDWR)
+                cls.kfd = os.open("/dev/kfd", os.O_RDWR | os.O_CLOEXEC)
                 cls.gpus = [
                     g.parent
                     for g in pathlib.Path(
@@ -117,11 +131,10 @@ class KFDDevice(MemoryManager):
                 ) from e
 
     def __init__(self, device: str):
-        # Ensure class-level initialization is done
+        super().__init__()
         self.__class__.initialize_class()
 
         self.KFD_IOCTL = ioctls_from_header()
-        self.fd = os.open("/dev/fd", os.O_RDWR | os.os.O_CLOEXEC)
         self.device_id = int(device.split(":")[1]) if ":" in device else 0
         try:
             gpu_path = self.__class__.gpus[self.device_id]
@@ -165,8 +178,9 @@ class KFDDevice(MemoryManager):
 
     def close(self):
         """Closes the device file descriptor, freeing up system resources."""
-        os.close(self.fd)
+        os.close(self.__class__.kfd)
 
+    # TODO: not sure I need this since I'm getting the actual ioctls from the headers
     def ioctl(self, cmd: int, arg: ctypes.Structure) -> ctypes.Structure:
         """
         Performs an IOCTL operation using the device's file descriptor.
@@ -182,7 +196,7 @@ class KFDDevice(MemoryManager):
             OSError: If the IOCTL operation fails.
         """
         try:
-            ret = fcntl.ioctl(self.fd, cmd, arg)
+            ret = fcntl.ioctl(self.__class__.kfd, cmd, arg)
             return arg
         except IOError as e:
             raise OSError(f"IOCTL operation failed: {e}")
@@ -193,19 +207,21 @@ class KFDDevice(MemoryManager):
         """
         # TODO: setup all the necessary instance attributes to create this queue
         queue_args = {
-            'ring_base_address': self.aql_ring.va_addr,
-            'ring_size': self.aql_ring.size,
-            'gpu_id': self.gpu_id,
-            'queue_type': kfd.KFD_IOC_QUEUE_TYPE_COMPUTE_AQL,
-            'queue_percentage': kfd.KFD_MAX_QUEUE_PERCENTAGE,
-            'queue_priority': kfd.KFD_MAX_QUEUE_PRIORITY,
-            'eop_buffer_address': self.eop_buffer.va_addr,
-            'eop_buffer_size': self.eop_buffer.size,
-            'ctx_save_restore_address': self.ctx_save_restore_address.va_addr,
-            'ctx_save_restore_size': self.ctx_save_restore_address.size,
-            'ctl_stack_size': 0xa000,
-            'write_pointer_address': self.gart_aql.va_addr + getattr(hsa.amd_queue_t, 'write_dispatch_id').offset,
-            'read_pointer_address': self.gart_aql.va_addr + getattr(hsa.amd_queue_t, 'read_dispatch_id').offset,
+            "ring_base_address": self.aql_ring.va_addr,
+            "ring_size": self.aql_ring.size,
+            "gpu_id": self.gpu_id,
+            "queue_type": kfd.KFD_IOC_QUEUE_TYPE_COMPUTE_AQL,
+            "queue_percentage": kfd.KFD_MAX_QUEUE_PERCENTAGE,
+            "queue_priority": kfd.KFD_MAX_QUEUE_PRIORITY,
+            "eop_buffer_address": self.eop_buffer.va_addr,
+            "eop_buffer_size": self.eop_buffer.size,
+            "ctx_save_restore_address": self.ctx_save_restore_address.va_addr,
+            "ctx_save_restore_size": self.ctx_save_restore_address.size,
+            "ctl_stack_size": 0xA000,
+            "write_pointer_address": self.gart_aql.va_addr
+            + getattr(hsa.amd_queue_t, "write_dispatch_id").offset,
+            "read_pointer_address": self.gart_aql.va_addr
+            + getattr(hsa.amd_queue_t, "read_dispatch_id").offset,
         }
 
         self.aql_queue = self.KFD_IOCTL.create_queue(KFDDevice.kfd, **queue_args)
