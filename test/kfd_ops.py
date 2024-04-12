@@ -167,17 +167,23 @@ class TestKFDDeviceHardwareIntegration:
         """
         Test the functionality of creating a queue on the KFD device.
         """
-        #TODO: first create the allocation function in kfd/ops.py based off of the passing test
-        # above and then use those new functions to test this out - repeating this for other 
+        # TODO: first create the allocation function in kfd/ops.py based off of the passing test
+        # above and then use those new functions to test this out - repeating this for other
         # fucntions that build off of each other.
-        size = 0x100000 #sdma_ring
+        size = 0x100000  # sdma_ring
         addr_flags = mmap.MAP_SHARED | mmap.MAP_ANONYMOUS
 
         addr = kfd_device.mmap(size=size, prot=0, flags=addr_flags, fd=-1, offset=0)
 
         flags = kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT
-        flags |= kfd.KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE | kfd.KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE | kfd.KFD_IOC_ALLOC_MEM_FLAGS_NO_SUBSTITUTE
-        flags |= kfd.KFD_IOC_ALLOC_MEM_FLAGS_COHERENT | kfd.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED
+        flags |= (
+            kfd.KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_NO_SUBSTITUTE
+        )
+        flags |= (
+            kfd.KFD_IOC_ALLOC_MEM_FLAGS_COHERENT | kfd.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED
+        )
         sdma_ring = kfd_device.KFD_IOCTL.alloc_memory_of_gpu(
             kfd_device.kfd,
             va_addr=addr,
@@ -188,9 +194,12 @@ class TestKFDDeviceHardwareIntegration:
         )
 
         sdma_ring.__setattr__(
-            "mapped_gpu_ids", getattr(sdma_ring, "mapped_gpu_ids", []) + [kfd_device.gpu_id]
+            "mapped_gpu_ids",
+            getattr(sdma_ring, "mapped_gpu_ids", []) + [kfd_device.gpu_id],
         )
-        c_gpus = (ctypes.c_int32 * len(sdma_ring.mapped_gpu_ids))(*sdma_ring.mapped_gpu_ids)
+        c_gpus = (ctypes.c_int32 * len(sdma_ring.mapped_gpu_ids))(
+            *sdma_ring.mapped_gpu_ids
+        )
 
         stm = kfd_device.KFD_IOCTL.map_memory_to_gpu(
             kfd_device.kfd,
@@ -200,11 +209,21 @@ class TestKFDDeviceHardwareIntegration:
         )
         assert stm.n_success == len(sdma_ring.mapped_gpu_ids)
 
-        self.gart_sdma = self._gpu_alloc(0x1000, kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT, uncached=True)
+        self.gart_sdma = self._gpu_alloc(
+            0x1000, kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT, uncached=True
+        )
 
-        self.sdma_queue = kfd_device.KFD_IOCTL.create_queue(KFDDevice.kfd, ring_base_address=sdma_ring.va_addr, ring_size=sdma_ring.size, gpu_id=kfd_device.gpu_id,
-          queue_type=kfd.KFD_IOC_QUEUE_TYPE_SDMA, queue_percentage=kfd.KFD_MAX_QUEUE_PERCENTAGE, queue_priority=kfd.KFD_MAX_QUEUE_PRIORITY,
-          write_pointer_address=self.gart_sdma.va_addr, read_pointer_address=self.gart_sdma.va_addr+8)
+        self.sdma_queue = kfd_device.KFD_IOCTL.create_queue(
+            KFDDevice.kfd,
+            ring_base_address=sdma_ring.va_addr,
+            ring_size=sdma_ring.size,
+            gpu_id=kfd_device.gpu_id,
+            queue_type=kfd.KFD_IOC_QUEUE_TYPE_SDMA,
+            queue_percentage=kfd.KFD_MAX_QUEUE_PERCENTAGE,
+            queue_priority=kfd.KFD_MAX_QUEUE_PRIORITY,
+            write_pointer_address=self.gart_sdma.va_addr,
+            read_pointer_address=self.gart_sdma.va_addr + 8,
+        )
 
         assert queue_id >= 0, "Queue ID should be a non-negative integer"
 

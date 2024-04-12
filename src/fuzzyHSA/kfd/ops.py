@@ -12,10 +12,10 @@
 
 import os
 import fcntl
-import ctypes
+import ctypes, mmap
 import pathlib
 from posix import O_RDWR
-from typing import Tuple, List, Any
+from typing import Dict, List, Any, Optional
 
 import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
 from .utils import ioctls_from_header, is_usable_gpu
@@ -253,20 +253,63 @@ class KFDDevice(MemoryManager):
         #
         # self.aql_queue = self.KFD_IOCTL.create_queue(KFDDevice.kfd, **queue_args)
 
-    def allocate_memory(self, size: int):
+    def allocate_memory(
+        self, size: int, memory_flags: Dict[str, int], map_to_gpu: Optional[bool] = None
+    ) -> Any:
         """
-        Allocates memory on the KFD device. Placeholder for demonstration.
+        Allocates memory on the KFD device using configuration flags for both mmap and KFD.
 
         Args:
             size (int): The size of the memory to allocate in bytes.
+            memory_flags (Dict[str, int]): Configuration dictionary containing mmap and KFD flags.
+            map_to_gpu (Optional[bool], optional): If set to True, maps the allocated memory to the GPU after allocation.
 
         Returns:
-            A reference or pointer to the allocated memory. Actual return type and mechanism
-            depend on the implementation of memory management within the device context.
+            The allocated memory object with optional GPU mapping.
         """
         # TODO: should create this function first from the gpu_allocation tests that passes
         # then can use in the subsequent test that need it like create_queue
-        pass
+        # Still need to test this new function, just wanted to get what I was thinking down first
+
+        mmap_prot = memory_flags["mmap_prot"]
+        mmap_flags = memory_flags["mmap_flags"]
+        kfd_flags = memory_flags["kfd_flags"]
+
+        addr = self.mmap(size=size, prot=mmap_prot, flags=mmap_flags, fd=-1, offset=0)
+
+        mem = self.KFD_IOCTL.alloc_memory_of_gpu(
+            self.kfd,
+            va_addr=addr,
+            size=size,
+            gpu_id=self.gpu_id,
+            flags=kfd_flags,
+            mmap_offset=0,
+        )
+        if map_to_gpu:
+            self._map_memory_to_gpu(mem)
+        return mem
+
+    def _map_memory_to_gpu(self, mem) -> None:
+        """
+        Maps memory to GPU using IOCTL commands.
+
+        Args:
+            mem: Memory object with GPU memory details.
+        """
+        mem.__setattr__(
+            "mapped_gpu_ids", getattr(mem, "mapped_gpu_ids", []) + [self.gpu_id]
+        )
+
+        c_gpus = (ctypes.c_int32 * len(mem.mapped_gpu_ids))(*mem.mapped_gpu_ids)
+        stm = self.KFD_IOCTL.map_memory_to_gpu(
+            self.kfd,
+            handle=mem.handle,
+            device_ids_array_ptr=ctypes.addressof(c_gpus),
+            n_devices=len(mem.mapped_gpu_ids),
+        )
+        assert stm.n_success == len(
+            mem.mapped_gpu_ids
+        ), "Not all GPUs were mapped successfully"
 
     def print_ioctl_functions(self):
         """
