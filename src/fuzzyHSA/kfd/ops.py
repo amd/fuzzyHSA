@@ -206,25 +206,52 @@ class KFDDevice(MemoryManager):
         Creates a compute queue on the KFD device, utilizing ioctl commands.
         """
         # TODO: setup all the necessary instance attributes to create this queue
-        queue_args = {
-            "ring_base_address": self.aql_ring.va_addr,
-            "ring_size": self.aql_ring.size,
-            "gpu_id": self.gpu_id,
-            "queue_type": kfd.KFD_IOC_QUEUE_TYPE_COMPUTE_AQL,
-            "queue_percentage": kfd.KFD_MAX_QUEUE_PERCENTAGE,
-            "queue_priority": kfd.KFD_MAX_QUEUE_PRIORITY,
-            "eop_buffer_address": self.eop_buffer.va_addr,
-            "eop_buffer_size": self.eop_buffer.size,
-            "ctx_save_restore_address": self.ctx_save_restore_address.va_addr,
-            "ctx_save_restore_size": self.ctx_save_restore_address.size,
-            "ctl_stack_size": 0xA000,
-            "write_pointer_address": self.gart_aql.va_addr
-            + getattr(hsa.amd_queue_t, "write_dispatch_id").offset,
-            "read_pointer_address": self.gart_aql.va_addr
-            + getattr(hsa.amd_queue_t, "read_dispatch_id").offset,
-        }
-
-        self.aql_queue = self.KFD_IOCTL.create_queue(KFDDevice.kfd, **queue_args)
+        # queue_args = {
+        #     "ring_base_address": self.aql_ring.va_addr,
+        #     "ring_size": self.aql_ring.size,
+        #     "gpu_id": self.gpu_id,
+        #     "queue_type": kfd.KFD_IOC_QUEUE_TYPE_COMPUTE_AQL,
+        #     "queue_percentage": kfd.KFD_MAX_QUEUE_PERCENTAGE,
+        #     "queue_priority": kfd.KFD_MAX_QUEUE_PRIORITY,
+        #     "eop_buffer_address": self.eop_buffer.va_addr,
+        #     "eop_buffer_size": self.eop_buffer.size,
+        #     "ctx_save_restore_address": self.ctx_save_restore_address.va_addr,
+        #     "ctx_save_restore_size": self.ctx_save_restore_address.size,
+        #     "ctl_stack_size": 0xA000,
+        #     "write_pointer_address": self.gart_aql.va_addr
+        #     + getattr(hsa.amd_queue_t, "write_dispatch_id").offset,
+        #     "read_pointer_address": self.gart_aql.va_addr
+        #     + getattr(hsa.amd_queue_t, "read_dispatch_id").offset,
+        # }
+        # size = 0x1000
+        # addr_flags = mmap.MAP_SHARED | mmap.MAP_ANONYMOUS
+        #
+        # addr = kfd_device.mmap(size=size, prot=0, flags=addr_flags, fd=-1, offset=0)
+        #
+        # flags = kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT
+        # mem = kfd_device.KFD_IOCTL.alloc_memory_of_gpu(
+        #     kfd_device.kfd,
+        #     va_addr=addr,
+        #     size=size,
+        #     gpu_id=kfd_device.gpu_id,
+        #     flags=flags,
+        #     mmap_offset=0,
+        # )
+        #
+        # mem.__setattr__(
+        #     "mapped_gpu_ids", getattr(mem, "mapped_gpu_ids", []) + [kfd_device.gpu_id]
+        # )
+        # c_gpus = (ctypes.c_int32 * len(mem.mapped_gpu_ids))(*mem.mapped_gpu_ids)
+        #
+        # stm = kfd_device.KFD_IOCTL.map_memory_to_gpu(
+        #     kfd_device.kfd,
+        #     handle=mem.handle,
+        #     device_ids_array_ptr=ctypes.addressof(c_gpus),
+        #     n_devices=len(mem.mapped_gpu_ids),
+        # )
+        # assert stm.n_success == len(mem.mapped_gpu_ids)
+        #
+        # self.aql_queue = self.KFD_IOCTL.create_queue(KFDDevice.kfd, **queue_args)
 
     def allocate_memory(self, size: int):
         """
@@ -237,7 +264,8 @@ class KFDDevice(MemoryManager):
             A reference or pointer to the allocated memory. Actual return type and mechanism
             depend on the implementation of memory management within the device context.
         """
-        # TODO:
+        # TODO: should create this function first from the gpu_allocation tests that passes
+        # then can use in the subsequent test that need it like create_queue
         pass
 
     def print_ioctl_functions(self):
