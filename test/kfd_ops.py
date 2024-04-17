@@ -28,7 +28,7 @@ class TestKFDDeviceHardwareIntegration:
         Test memory mapping and unmapping functionality with actual hardware.
         """
         # NOTE: using fd=-1 in combination with mmap.MAP_ANONYMOUS is appropriate
-        # or creating memory mappings that are independent of the file system,
+        # for creating memory mappings that are independent of the file system,
         # offering a simple and effective way to manage memory for temporary or
         # internal application needs.
 
@@ -91,8 +91,9 @@ class TestKFDDeviceHardwareIntegration:
         operations = [
             ("acquire_vm", self._test_acquire_vm),
             ("alloc_memory_of_gpu", self._test_alloc_memory_of_gpu),
-            ("create_queue", self._test_create_queue),
             ("map_memory_to_gpu", self._test_map_memory_to_gpu),
+            ("create_event", self._test_create_event),
+            ("create_queue", self._test_create_queue),
             # TODO: List above
         ]
         results = {}
@@ -162,6 +163,21 @@ class TestKFDDeviceHardwareIntegration:
             n_devices=len(mem.mapped_gpu_ids),
         )
         assert stm.n_success == len(mem.mapped_gpu_ids)
+
+    def _test_create_event(self, kfd_device):
+        memory_flags_config = {
+            "mmap_prot": mmap.PROT_READ | mmap.PROT_WRITE,
+            "mmap_flags": mmap.MAP_SHARED | mmap.MAP_ANONYMOUS,
+            "kfd_flags": kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT | kfd.KFD_IOC_ALLOC_MEM_FLAGS_COHERENT | 
+                         kfd.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED | kfd.KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE | 
+                         kfd.KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE | kfd.KFD_IOC_ALLOC_MEM_FLAGS_NO_SUBSTITUTE
+        }
+
+        memory_size = 0x8000
+        KFDDevice.event_page = kfd_device.allocate_memory(memory_size, memory_flags_config, map_to_gpu=True)
+        sync_event = kfd_device.KFD_IOCTL.create_event(KFDDevice.kfd, event_page_offset=KFDDevice.event_page.handle, auto_reset=1)
+        assert sync_event is not None, "Failed to create event."
+
 
     def _test_create_queue(self, kfd_device):
         """

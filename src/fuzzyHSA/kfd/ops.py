@@ -286,10 +286,10 @@ class KFDDevice(MemoryManager):
             mmap_offset=0,
         )
         if map_to_gpu:
-            self._map_memory_to_gpu(mem)
+            self.map_memory_to_gpu(mem)
         return mem
 
-    def _map_memory_to_gpu(self, mem) -> None:
+    def map_memory_to_gpu(self, mem) -> None:
         """
         Maps memory to GPU using IOCTL commands.
 
