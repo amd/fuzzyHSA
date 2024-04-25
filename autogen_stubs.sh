@@ -8,7 +8,7 @@ find_package_path() {
 }
 
 PACKAGE_NAME="fuzzyHSA"
-BASE=$(find_package_path $PACKAGE_NAME)/kfd
+BASE=$(find_package_path $PACKAGE_NAME)/kfd/autogen
 
 # setup instructions for clang2py
 if [[ ! $(clang2py -V) ]]; then

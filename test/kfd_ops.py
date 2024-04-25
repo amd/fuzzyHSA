@@ -1,7 +1,7 @@
 import ctypes, mmap
 import pytest
 from fuzzyHSA.kfd.ops import KFDDevice
-import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
+import fuzzyHSA.kfd.autogen.kfd as kfd  # importing generated files via the fuzzyHSA package
 
 
 @pytest.fixture(scope="module")

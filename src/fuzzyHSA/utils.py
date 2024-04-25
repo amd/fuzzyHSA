@@ -17,7 +17,7 @@ import importlib.util
 # TODO: need to have this check for general "filename"
 def check_generated_files():
     package_path = Path(importlib.util.find_spec("fuzzyHSA").origin).parent
-    kfd_file_path = package_path / "kfd" / "kfd.py"
+    kfd_file_path = package_path /  "kfd" / "autogen" / "kfd.py"
     if not kfd_file_path.exists():
         raise RuntimeError(
             "kfd.py not found. Please run autogen_stub.sh to generate it."

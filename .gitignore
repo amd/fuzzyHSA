@@ -4,4 +4,4 @@ __pycache__/
 
 build/
 src/fuzzyHSA.egg*
-src/fuzzyHSA/kfd/kfd.py
+src/fuzzyHSA/kfd/autogen/*

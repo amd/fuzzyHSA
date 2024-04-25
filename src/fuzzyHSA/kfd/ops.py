@@ -17,7 +17,7 @@ import pathlib
 from posix import O_RDWR
 from typing import Dict, List, Any, Optional
 
-import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
+import fuzzyHSA.kfd.autogen.kfd as kfd  # importing generated files via the fuzzyHSA package
 from .utils import ioctls_from_header, is_usable_gpu
 
 
