@@ -168,16 +168,22 @@ class TestKFDDeviceHardwareIntegration:
         memory_flags_config = {
             "mmap_prot": mmap.PROT_READ | mmap.PROT_WRITE,
             "mmap_flags": mmap.MAP_SHARED | mmap.MAP_ANONYMOUS,
-            "kfd_flags": kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT | kfd.KFD_IOC_ALLOC_MEM_FLAGS_COHERENT | 
-                         kfd.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED | kfd.KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE | 
-                         kfd.KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE | kfd.KFD_IOC_ALLOC_MEM_FLAGS_NO_SUBSTITUTE
+            "kfd_flags": kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_COHERENT
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_NO_SUBSTITUTE,
         }
 
         memory_size = 0x8000
-        KFDDevice.event_page = kfd_device.allocate_memory(memory_size, memory_flags_config, map_to_gpu=True)
-        sync_event = kfd_device.KFD_IOCTL.create_event(KFDDevice.kfd, event_page_offset=KFDDevice.event_page.handle, auto_reset=1)
+        KFDDevice.event_page = kfd_device.allocate_memory(
+            memory_size, memory_flags_config, map_to_gpu=True
+        )
+        sync_event = kfd_device.KFD_IOCTL.create_event(
+            KFDDevice.kfd, event_page_offset=KFDDevice.event_page.handle, auto_reset=1
+        )
         assert sync_event is not None, "Failed to create event."
-
 
     def _test_create_queue(self, kfd_device):
         """

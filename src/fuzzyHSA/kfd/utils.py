@@ -18,7 +18,7 @@ import fcntl
 import os
 from typing import Type, Any
 
-import fuzzyHSA.kfd.kfd as kfd  # importing generated files via the fuzzyHSA package
+import fuzzyHSA.kfd.autogen.kfd as kfd  # importing generated files via the fuzzyHSA package
 
 
 def is_usable_gpu(gpu_id):
@@ -84,3 +84,56 @@ def ioctls_from_header() -> Any:
         for name, idir, nr, sname in matches
     }
     return type("KFD_IOCTL", (object,), fxns)()
+
+
+def create_sdma_packets():
+    structs = {}
+    packet_definitions = {
+        name: struct
+        for name, struct in amd_gpu.__dict__.items()
+        if name.startswith("struct_SDMA_PKT_") and name.endswith("_TAG")
+    }
+
+    for name, pkt in packet_definitions.items():
+        fields, names = [], set()
+
+        for field_name, field_type in pkt._fields_:
+            if field_name.endswith("_UNION"):
+                handle_union_field(fields, field_name, field_type, names)
+            else:
+                fields.append((field_name, field_type))
+
+        # Structure renaming for consistency and readability
+        new_name = name[16:-4].lower()
+        struct_type = init_c_struct_t(tuple(fields))
+        structs[new_name] = struct_type
+
+        assert_size_matches(struct_type, pkt)
+
+    return type("SDMA_PKTS", (object,), structs)
+
+
+def assert_size_matches(new_struct, original_struct):
+    assert ctypes.sizeof(new_struct) == ctypes.sizeof(
+        original_struct
+    ), f"{ctypes.sizeof(new_struct)} != {ctypes.sizeof(original_struct)}"
+
+
+def handle_union_field(fields, field_name, field_type, names):
+    assert field_type._fields_[0][0] == "_0", "Union first field must be named '_0'"
+    union_base = field_type._fields_[0][1]
+
+    for union_field in union_base._fields_:
+        union_field_name = union_field[0]
+        if union_field_name in names:
+            union_field_name = field_name + union_field_name
+        names.add(union_field_name)
+        merge_64bit_fields(fields, union_field_name, union_field)
+
+
+def merge_64bit_fields(fields, field_name, union_field):
+    if field_name.endswith("_63_32") and fields[-1][0].endsuffix("_31_0"):
+        last_field_name = fields[-1][0][:-6]  # Remove the '_31_0' part
+        fields[-1] = (last_field_name, ctypes.c_ulong, 64)
+    else:
+        fields.append((field_name, *union_field[1:]))

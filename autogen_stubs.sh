@@ -51,8 +51,8 @@ function generate_amd_gpu() {
 		wget https://raw.githubusercontent.com/ROCm/ROCR-Runtime/201228c4fbd343cebdb6457ded7cb4d55637d60d/src/core/inc/sdma_registers.h -O $BASE/sdma_registers.h
 		clang2py $BASE/sdma_registers.h --clang-args="-I$include_path -x c++" -o "$BASE/amd_gpu.py" -l /opt/rocm/lib/libhsa-runtime64.so
 
-    NVD_HEADER=$(find /usr/src -name nvd.h | grep 'amdgpu')
-    [ -f "NVD_HEADER" ] && echo "Couldn't find nvd.h on the system" && exit 1
+		NVD_HEADER=$(find /usr/src -name nvd.h | grep 'amdgpu')
+		[ -f "NVD_HEADER" ] && echo "Couldn't find nvd.h on the system" && exit 1
 
 		sed 's/^\(.*\)\(\s*\/\*\)\(.*\)$/\1 #\2\3/; s/^\(\s*\*\)\(.*\)$/#\1\2/' $NVD_HEADER >>$BASE/amd_gpu.py # comments
 		sed -i 's/#\s*define\s*\([^ \t]*\)(\([^)]*\))\s*\(.*\)/def \1(\2): return \3/' $BASE/amd_gpu.py        # #define name(x) (smth) -> def name(x): return (smth)
