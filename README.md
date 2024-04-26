@@ -9,11 +9,11 @@ Analysis of [Tinygrad KFD and HSA backends](https://gist.github.com/fxkamd/ffd02
 ## Installation
 
 1. pip install .
-2. bash autogen_stubs.sh generate=kfd
+2. bash autogen_stubs.sh generate
 
 ## Uninstalling
 
-1. bash autogen_stubs.sh clean=kfd
+1. bash autogen_stubs.sh clean
 2. pip uninstall fuzzyHSA
 
 ## Testing
