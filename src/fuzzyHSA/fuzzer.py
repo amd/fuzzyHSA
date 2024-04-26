@@ -13,9 +13,17 @@
 from .utils import check_generated_files
 from fuzzyHSA.kfd.ops import KFDDevice
 
+REQUIRED_FILES = ["kfd.py", "hsa.py", "amd_gpu.py"]
+
 
 def main():
-    check_generated_files()
+    try:
+        check_generated_files(REQUIRED_FILES)
+        print("All required files are present. Continuing with main execution.")
+        # TODO: continue main execution here
+    except RuntimeError as e:
+        print(f"Startup Error: {e}")
+        return
 
 
 if __name__ == "__main__":
