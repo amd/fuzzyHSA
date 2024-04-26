@@ -10,17 +10,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from fuzzer_backend import KernelManager, HSAFuzzer
-from .utils import create_cache_directory
+from .utils import check_generated_files
+from fuzzyHSA.kfd.ops import KFDDevice
+
+REQUIRED_FILES = ["kfd.py", "hsa.py", "amd_gpu.py"]
 
 
 def main():
-    create_cache_directory()
-
-    kernel_manager = KernelManager()
-    kernel_manager.compile_kernel_to_hsaco("vector_add")
-    fuzzer = HSAFuzzer("vector_add.hsaco")
-    fuzzer.allocate_memory(1024)
+    try:
+        check_generated_files(REQUIRED_FILES)
+        print("All required files are present. Continuing with main execution.")
+        # TODO: continue main execution here
+    except RuntimeError as e:
+        print(f"Startup Error: {e}")
+        return
 
 
 if __name__ == "__main__":

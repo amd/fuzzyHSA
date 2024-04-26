@@ -1,4 +1,7 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
 build/
-src/*.so
-src/fuzzyHSA/__pycache__
-*.hsaco
+src/fuzzyHSA.egg*
+src/fuzzyHSA/kfd/autogen/*
