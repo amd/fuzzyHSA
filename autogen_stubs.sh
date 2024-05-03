@@ -24,7 +24,7 @@ if [[ ! $(clang2py -V) ]]; then
 	popd
 fi
 
-fixup() {
+function fixup() {
 	sed -i '1s/^/# mypy: ignore-errors\n/' "$1"
 	sed -i 's/ *$//' "$1"
 	grep FIXME_STUB "$1" || true
