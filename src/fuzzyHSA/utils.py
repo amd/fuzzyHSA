@@ -57,3 +57,18 @@ def query_attributes(obj: Any) -> Dict[str, Any]:
         name: value for name, value in inspect.getmembers(obj) if not callable(value)
     }
     return members_dict
+
+def read_file(path: Path) -> int:
+    """
+    Helper method to read a single value from a file and convert it to an integer.
+    """
+    with open(path, "r") as file:
+        return int(file.read().strip())
+
+def read_properties(path: Path) -> dict:
+    """
+    Helper method to read properties from a file and convert them into a dictionary.
+    Each line in the file is expected to have a key and a value separated by whitespace.
+    """
+    with open(path, "r") as file:
+        return {line.split()[0]: int(line.split()[1]) for line in file}

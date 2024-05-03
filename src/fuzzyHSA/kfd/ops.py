@@ -18,6 +18,7 @@ from posix import O_RDWR
 from typing import Dict, List, Any, Optional
 
 import fuzzyHSA.kfd.autogen.kfd as kfd  # importing generated files via the fuzzyHSA package
+from fuzzyHSA.utils import read_file, read_properties
 from .utils import ioctls_from_header, is_usable_gpu
 
 
@@ -106,7 +107,7 @@ class KFDDevice(MemoryManager):
     # class attributes
     kfd: int = -1
     event_page: Any = (
-        None  # TODO: fix types in kfd, Optional[kfd.struct_kfd_ioctl_alloc_memory_of_gpu_args]
+        None
     )
     signals_page: Any = None
     signal_number: int = 16
@@ -133,10 +134,10 @@ class KFDDevice(MemoryManager):
     def __init__(self, device: str):
         super().__init__()
         self.__class__.initialize_class()
-
         self.KFD_IOCTL = ioctls_from_header()
-        self.device_id = int(device.split(":")[1]) if ":" in device else 0
+
         try:
+            self.device_id = int(device.split(":")[1]) if ":" in device else 0
             gpu_path = self.__class__.gpus[self.device_id]
             self.gpu_id = int((gpu_path / "gpu_id").read_text().strip())
             properties = (gpu_path / "properties").read_text().strip().split("\n")
@@ -150,6 +151,16 @@ class KFDDevice(MemoryManager):
             self.arch = (
                 f"gfx{target // 10000}{(target // 100) % 100:02x}{target % 100:02x}"
             )
+
+            self.KFD_IOCTL.acquire_vm(self.kfd, drm_fd=self.drm_fd, gpu_id=self.gpu_id)
+
+            # SDMA Queue
+            self.gart_sdma = self._allocate_memory(0x1000, kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT, uncached=True)
+            self.sdma_ring = self._allocate_memory(0x100000, kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT, uncached=True)
+            self.sdma_queue = kio.create_queue(cls.kfd, ring_base_address=self.sdma_ring.va_addr, ring_size=self.sdma_ring.size, gpu_id=self.gpu_id,
+              queue_type=kfd.KFD_IOC_QUEUE_TYPE_SDMA, queue_percentage=kfd.KFD_MAX_QUEUE_PERCENTAGE, queue_priority=kfd.KFD_MAX_QUEUE_PRIORITY,
+              write_pointer_address=self.gart_sdma.va_addr, read_pointer_address=self.gart_sdma.va_addr+8)
+
         except Exception as e:
             raise RuntimeError(
                 f"Failed to initialize KFDDevice instance with error: {e}"
@@ -201,59 +212,49 @@ class KFDDevice(MemoryManager):
         except IOError as e:
             raise OSError(f"IOCTL operation failed: {e}")
 
-    def create_queue(self):
+    # self.pm4_ctx_save_restore_address = self._gpu_alloc(0x2C02000, kfd.KFD_IOC_ALLOC_MEM_FLAGS_VRAM)
+    # self.eop_pm4_buffer = self._gpu_alloc(0x1000, kfd.KFD_IOC_ALLOC_MEM_FLAGS_VRAM)
+    # self.gart_pm4 = self._gpu_alloc(0x1000, kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT, uncached=True)
+    # self.pm4_ring = self._gpu_alloc(0x100000, kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT, uncached=True)
+    # self.pm4_queue = kio.create_queue(AMDDevice.kfd, ring_base_address=self.pm4_ring.va_addr, ring_size=self.pm4_ring.size, gpu_id=self.gpu_id,
+    #   queue_type=kfd.KFD_IOC_QUEUE_TYPE_COMPUTE, queue_percentage=kfd.KFD_MAX_QUEUE_PERCENTAGE, queue_priority=kfd.KFD_MAX_QUEUE_PRIORITY,
+    #   eop_buffer_address=self.eop_pm4_buffer.va_addr, eop_buffer_size=self.eop_pm4_buffer.size,
+    #   ctx_save_restore_address=self.pm4_ctx_save_restore_address.va_addr, ctx_save_restore_size=self.pm4_ctx_save_restore_address.size,
+    #   ctl_stack_size = 0xa000,
+    #   write_pointer_address=self.gart_pm4.va_addr, read_pointer_address=self.gart_pm4.va_addr+8)
+    def _create_queue(self, ring, gpu_id, queue_config, 
+         write_pointer_address, read_pointer_address, 
+         eop_buffer_address=None, eop_buffer_size=None, 
+         ctx_save_restore_address=None, ctx_save_restore_size=None, 
+         ctl_stack_size=None):
         """
-        Creates a compute queue on the KFD device, utilizing ioctl commands.
-        """
-        # TODO: setup all the necessary instance attributes to create this queue
-        # queue_args = {
-        #     "ring_base_address": self.aql_ring.va_addr,
-        #     "ring_size": self.aql_ring.size,
-        #     "gpu_id": self.gpu_id,
-        #     "queue_type": kfd.KFD_IOC_QUEUE_TYPE_COMPUTE_AQL,
-        #     "queue_percentage": kfd.KFD_MAX_QUEUE_PERCENTAGE,
-        #     "queue_priority": kfd.KFD_MAX_QUEUE_PRIORITY,
-        #     "eop_buffer_address": self.eop_buffer.va_addr,
-        #     "eop_buffer_size": self.eop_buffer.size,
-        #     "ctx_save_restore_address": self.ctx_save_restore_address.va_addr,
-        #     "ctx_save_restore_size": self.ctx_save_restore_address.size,
-        #     "ctl_stack_size": 0xA000,
-        #     "write_pointer_address": self.gart_aql.va_addr
-        #     + getattr(hsa.amd_queue_t, "write_dispatch_id").offset,
-        #     "read_pointer_address": self.gart_aql.va_addr
-        #     + getattr(hsa.amd_queue_t, "read_dispatch_id").offset,
-        # }
-        # size = 0x1000
-        # addr_flags = mmap.MAP_SHARED | mmap.MAP_ANONYMOUS
-        #
-        # addr = kfd_device.mmap(size=size, prot=0, flags=addr_flags, fd=-1, offset=0)
-        #
-        # flags = kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT
-        # mem = kfd_device.KFD_IOCTL.alloc_memory_of_gpu(
-        #     kfd_device.kfd,
-        #     va_addr=addr,
-        #     size=size,
-        #     gpu_id=kfd_device.gpu_id,
-        #     flags=flags,
-        #     mmap_offset=0,
-        # )
-        #
-        # mem.__setattr__(
-        #     "mapped_gpu_ids", getattr(mem, "mapped_gpu_ids", []) + [kfd_device.gpu_id]
-        # )
-        # c_gpus = (ctypes.c_int32 * len(mem.mapped_gpu_ids))(*mem.mapped_gpu_ids)
-        #
-        # stm = kfd_device.KFD_IOCTL.map_memory_to_gpu(
-        #     kfd_device.kfd,
-        #     handle=mem.handle,
-        #     device_ids_array_ptr=ctypes.addressof(c_gpus),
-        #     n_devices=len(mem.mapped_gpu_ids),
-        # )
-        # assert stm.n_success == len(mem.mapped_gpu_ids)
-        #
-        # self.aql_queue = self.KFD_IOCTL.create_queue(KFDDevice.kfd, **queue_args)
+        Create a GPU queue with specified configuration and optional parameters.
 
-    def allocate_memory(
+        Args:
+            va_addr (int): Base virtual address of the command ring buffer.
+            size (int): Size of the command ring buffer.
+            gpu_id (int): Identifier for the GPU.
+            queue_config (dict): Configuration dictionary for various queue attributes.
+            write_pointer_address (int): Address in GPU memory for the write pointer.
+            read_pointer_address (int): Address in GPU memory for the read pointer.
+            eop_buffer_address (int, optional): Base address of the End-Of-Pipe buffer.
+            eop_buffer_size (int, optional): Size of the EOP buffer.
+            ctx_save_restore_address (int, optional): Address for the context save-and-restore area.
+            ctx_save_restore_size (int, optional): Size of the context save-and-restore area.
+            ctl_stack_size (int, optional): Size of the control stack.
+
+        Actions:
+            The function initializes a queue with mandatory parameters and checks if optional parameters
+            are provided to configure additional features.
+        """
+        # self.pm4_queue = kio.create_queue(AMDDevice.kfd, ring_base_address=self.pm4_ring.va_addr, ring_size=self.pm4_ring.size, gpu_id=self.gpu_id,
+        #   queue_type=kfd.KFD_IOC_QUEUE_TYPE_COMPUTE, queue_percentage=kfd.KFD_MAX_QUEUE_PERCENTAGE, queue_priority=kfd.KFD_MAX_QUEUE_PRIORITY,
+        #   eop_buffer_address=self.eop_pm4_buffer.va_addr, eop_buffer_size=self.eop_pm4_buffer.size,
+        #   ctx_save_restore_address=self.pm4_ctx_save_restore_address.va_addr, ctx_save_restore_size=self.pm4_ctx_save_restore_address.size,
+        #   ctl_stack_size = 0xa000,
+        #   write_pointer_address=self.gart_pm4.va_addr, read_pointer_address=self.gart_pm4.va_addr+8)
+
+    def _allocate_memory(
         self, size: int, memory_flags: Dict[str, int], map_to_gpu: Optional[bool] = None
     ) -> Any:
         """
@@ -267,9 +268,6 @@ class KFDDevice(MemoryManager):
         Returns:
             The allocated memory object with optional GPU mapping.
         """
-        # TODO: should create this function first from the gpu_allocation tests that passes
-        # then can use in the subsequent test that need it like create_queue
-        # Still need to test this new function, just wanted to get what I was thinking down first
 
         mmap_prot = memory_flags["mmap_prot"]
         mmap_flags = memory_flags["mmap_flags"]
@@ -286,10 +284,10 @@ class KFDDevice(MemoryManager):
             mmap_offset=0,
         )
         if map_to_gpu:
-            self.map_memory_to_gpu(mem)
+            self._map_memory_to_gpu(mem)
         return mem
 
-    def map_memory_to_gpu(self, mem: Any) -> None:
+    def _map_memory_to_gpu(self, mem: Any) -> None:
         """
         Maps memory to GPU using IOCTL commands.
 
@@ -347,7 +345,7 @@ class KFDDevice(MemoryManager):
         except Exception as e:
             raise OSError(f"Error freeing GPU memeory: {e}")
 
-    def create_sdma_packets():
+    def create_sdma_packets(self):
         structs = {}
         packet_definitions = {
             name: struct
