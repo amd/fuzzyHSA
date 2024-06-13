@@ -14,12 +14,16 @@ import os
 import fcntl
 import ctypes, mmap
 import pathlib
-from posix import O_RDWR
 from typing import Dict, List, Any, Optional
 
-import fuzzyHSA.kfd.autogen.kfd as kfd  # importing generated files via the fuzzyHSA package
+# importing generated files via the fuzzyHSA package
+import fuzzyHSA.kfd.autogen.kfd as kfd  
+import fuzzyHSA.kfd.autogen.hsa as hsa
+import fuzzyHSA.kfd.autogen.amd_gpu as amd_gpu
 from fuzzyHSA.utils import read_file, read_properties
-from .utils import ioctls_from_header, is_usable_gpu
+from .utils import ioctls_from_header, is_usable_gpu, handle_union_field, assert_size_matches, init_c_struct_t, round_up, to_mv
+
+from .defaults import AQL_PACKET_SIZE, SDMA_MAX_COPY_SIZE, PAGE_SIZE, SIGNAL_SIZE, SIGNAL_COUNT
 
 
 class MemoryManager:
@@ -96,7 +100,6 @@ class KFDDevice(MemoryManager):
         node_id (int): The unique identifier for the KFD device node.
 
     Methods:
-        __enter__, __exit__: Enable resource management using the 'with' statement.
         close(): Closes the device file descriptor.
         ioctl(cmd, arg): Performs an IOCTL operation on the device.
         create_queue(): Creates a queue on the KFD device using specific IOCTL commands.
@@ -154,98 +157,93 @@ class KFDDevice(MemoryManager):
 
             self.KFD_IOCTL.acquire_vm(self.kfd, drm_fd=self.drm_fd, gpu_id=self.gpu_id)
 
-            # SDMA Queue
-            self.gart_sdma = self._allocate_memory(0x1000, kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT, uncached=True)
-            self.sdma_ring = self._allocate_memory(0x100000, kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT, uncached=True)
-            self.sdma_queue = kio.create_queue(cls.kfd, ring_base_address=self.sdma_ring.va_addr, ring_size=self.sdma_ring.size, gpu_id=self.gpu_id,
-              queue_type=kfd.KFD_IOC_QUEUE_TYPE_SDMA, queue_percentage=kfd.KFD_MAX_QUEUE_PERCENTAGE, queue_priority=kfd.KFD_MAX_QUEUE_PRIORITY,
-              write_pointer_address=self.gart_sdma.va_addr, read_pointer_address=self.gart_sdma.va_addr+8)
+            # FLAG CONFIGS
+            kfd_common_flags = kfd.KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE
+                            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE
+                            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_NO_SUBSTITUTE
+                            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_COHERENT
+            aql_ring_flags = {
+                "mmap_prot": mmap.PROT_READ | mmap.PROT_WRITE,
+                "mmap_flags": mmap.MAP_SHARED | mmap.MAP_ANONYMOUS,
+                "kfd_flags": kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT
+                | kfd.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED
+                | kfd_common_flags,
+            }
+            eop_buffer_flags = {
+                "mmap_prot": mmap.PROT_READ | mmap.PROT_WRITE,
+                "mmap_flags": mmap.MAP_SHARED | mmap.MAP_ANONYMOUS,
+                "kfd_flags": kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT
+                | kfd_common_flags,
+            }
+            sdma_ring_flags = {
+                "mmap_prot": 0,
+                "mmap_flags": mmap.MAP_SHARED | mmap.MAP_ANONYMOUS,
+                "kfd_flags": kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT
+                | kfd.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED
+                | kfd_common_flags,
+            }
+            self.gart_aql = self._allocate_memory(0x1000, aql_ring_flags)
+            self.aql_ring = self._allocate_memory(0x100000, aql_ring_flags)
+            self.eop_buffer = self._allocate_memory(0x100000, eop_buffer_flags)
+            self.ctx_save_restore_address = self._allocate_memory(0x100000, eop_buffer_flags)
+            self.gart_sdma = self._allocate_memory(0x100000, aql_ring_flags)
+            self.sdma_ring = self._allocate_memory(0x100000, sdma_ring_flags)
+
+
+            # AQL Queue
+            self.amd_aql_queue = hsa.amd_queue_t.from_address(self.gart_aql.va_addr)
+            self.amd_aql_queue.write_dispatch_id = 0
+            self.amd_aql_queue.read_dispatch_id = 0
+            self.amd_aql_queue.read_dispatch_id_field_base_byte_offset = getattr(hsa.amd_queue_t, 'read_dispatch_id').offset
+            self.amd_aql_queue.queue_properties = hsa.AMD_QUEUE_PROPERTIES_IS_PTR64 | hsa.AMD_QUEUE_PROPERTIES_ENABLE_PROFILING
+
+            self.amd_aql_queue.max_cu_id = self.properties['simd_count'] // self.properties['simd_per_cu'] - 1
+            self.amd_aql_queue.max_wave_id = self.properties['max_waves_per_simd'] * self.properties['simd_per_cu'] - 2
+
+            # scratch setup
+            self.max_private_segment_size = 4096
+            wave_scratch_len = round_up(((self.amd_aql_queue.max_wave_id + 1) * self.max_private_segment_size), 256) # gfx11 requires alignment of 256
+            self.scratch_len = (self.amd_aql_queue.max_cu_id + 1) * self.properties['max_slots_scratch_cu'] * wave_scratch_len
+            self.scratch = self._allocate_memory(self.scratch_len, eop_buffer_flags)
+            self.amd_aql_queue.scratch_backing_memory_location = self.scratch.va_addr
+            self.amd_aql_queue.scratch_backing_memory_byte_size = self.scratch_len
+            self.amd_aql_queue.scratch_wave64_lane_byte_size = self.max_private_segment_size * (self.amd_aql_queue.max_wave_id + 1) // 64
+            self.amd_aql_queue.scratch_resource_descriptor[0] = self.scratch.va_addr & 0xFFFFFFFF
+            self.amd_aql_queue.scratch_resource_descriptor[1] = ((self.scratch.va_addr >> 32) & 0xFFFF) | (1 << 30) # va_hi | SWIZZLE_ENABLE
+            self.amd_aql_queue.scratch_resource_descriptor[2] = self.scratch_len & 0xFFFFFFFF
+            self.amd_aql_queue.scratch_resource_descriptor[3] = 0x20814fac # FORMAT=BUF_FORMAT_32_UINT,OOB_SELECT=2,ADD_TID_ENABLE=1,TYPE=SQ_RSRC_BUF,SQ_SELs
+            engines = self.properties['array_count'] // self.properties['simd_arrays_per_engine']
+            self.amd_aql_queue.compute_tmpring_size = (wave_scratch_len // 256) << 12 | (self.scratch_len // (wave_scratch_len * engines))
+
+            self.aql_queue = self._create_aql_queue()
+
+            self.doorbells_base = self.aql_queue.doorbell_offset & (~0x1fff)  # doorbell is two pages
+            self.doorbells = self.mmap(size=0x2000, prot=mmap.PROT_READ|mmap.PROT_WRITE, flags=mmap.MAP_SHARED, fd=self.kfd, offset=self.doorbells_base)
+            self.aql_doorbell = to_mv(self.doorbells + self.aql_queue.doorbell_offset - self.doorbells_base, 4).cast("I")
+            self.aql_doorbell_value = 0
+
+            self.sdma_queue = self._create_sdma_queue()
+
+            self.sdma_read_pointer = to_mv(self.sdma_queue.read_pointer_address, 8).cast("Q")
+            self.sdma_write_pointer = to_mv(self.sdma_queue.write_pointer_address, 8).cast("Q")
+            self.sdma_doorbell = to_mv(self.doorbells + self.sdma_queue.doorbell_offset - self.doorbells_base, 4).cast("I")
+            self.sdma_doorbell_value = 0
+            #
+            # # PM4 stuff
+            self.pm4_indirect_buf = self._allocate_memory(0x1000, aql_ring_flags)
+            pm4_indirect_cmd = (ctypes.c_uint32*13)(amd_gpu.PACKET3(amd_gpu.PACKET3_INDIRECT_BUFFER, 2), self.pm4_indirect_buf.va_addr & 0xffffffff,
+            │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │     (self.pm4_indirect_buf.va_addr>>32) & 0xffffffff, 8 | amd_gpu.INDIRECT_BUFFER_VALID, 0xa)
+
+            ctypes.memmove(ctypes.addressof(pm4_cmds:=(ctypes.c_uint16*27)(1))+2, ctypes.addressof(pm4_indirect_cmd), ctypes.sizeof(pm4_indirect_cmd))
+            self.pm4_packet = hsa.hsa_ext_amd_aql_pm4_packet_t(header=VENDOR_HEADER, pm4_command=pm4_cmds,
+            │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │                completion_signal=hsa.hsa_signal_t(ctypes.addressof(self.completion_signal)))
+            # super().__init__(device, KFDAllocator(self), KFDCompiler(self.arch), functools.partial(KFDProgram, self))
+
 
         except Exception as e:
             raise RuntimeError(
                 f"Failed to initialize KFDDevice instance with error: {e}"
             ) from e
-
-    def __enter__(self):
-        """
-        Enables the use of 'with' statement for this class, allowing for automatic
-        resource management.
-
-        Returns:
-            self (KFDDevice): The instance itself.
-        """
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """
-        Ensures the device is properly closed when exiting a 'with' block.
-
-        Args:
-            exc_type: Exception type.
-            exc_val: Exception value.
-            exc_tb: Exception traceback.
-        """
-        self.close()
-
-    def close(self):
-        """Closes the device file descriptor, freeing up system resources."""
-        os.close(self.__class__.kfd)
-
-    # TODO: not sure I need this since I'm getting the actual ioctls from the headers
-    def ioctl(self, cmd: int, arg: ctypes.Structure) -> ctypes.Structure:
-        """
-        Performs an IOCTL operation using the device's file descriptor.
-
-        Args:
-            cmd (int): The IOCTL command to execute.
-            arg (ctypes.Structure): The argument structure passed to the IOCTL command.
-
-        Returns:
-            ctypes.Structure: The potentially modified argument structure after the IOCTL call.
-
-        Raises:
-            OSError: If the IOCTL operation fails.
-        """
-        try:
-            ret = fcntl.ioctl(self.__class__.kfd, cmd, arg)
-            return arg
-        except IOError as e:
-            raise OSError(f"IOCTL operation failed: {e}")
-
-    # TODO: the gist of the design is the KFDDevice should be fully setup at initalization
-    # so commands like 'create_queue' will have an underscore indicating this is only for
-    # object initialization. 
-    def _create_queue(self, ring, gpu_id, queue_config, 
-         write_pointer_address, read_pointer_address, 
-         eop_buffer_address=None, eop_buffer_size=None, 
-         ctx_save_restore_address=None, ctx_save_restore_size=None, 
-         ctl_stack_size=None):
-        """
-        Create a GPU queue with specified configuration and optional parameters.
-
-        Args:
-            va_addr (int): Base virtual address of the command ring buffer.
-            size (int): Size of the command ring buffer.
-            gpu_id (int): Identifier for the GPU.
-            queue_config (dict): Configuration dictionary for various queue attributes.
-            write_pointer_address (int): Address in GPU memory for the write pointer.
-            read_pointer_address (int): Address in GPU memory for the read pointer.
-            eop_buffer_address (int, optional): Base address of the End-Of-Pipe buffer.
-            eop_buffer_size (int, optional): Size of the EOP buffer.
-            ctx_save_restore_address (int, optional): Address for the context save-and-restore area.
-            ctx_save_restore_size (int, optional): Size of the context save-and-restore area.
-            ctl_stack_size (int, optional): Size of the control stack.
-
-        Actions:
-            The function initializes a queue with mandatory parameters and checks if optional parameters
-            are provided to configure additional features.
-        """
-        # self.pm4_queue = kio.create_queue(AMDDevice.kfd, ring_base_address=self.pm4_ring.va_addr, ring_size=self.pm4_ring.size, gpu_id=self.gpu_id,
-        #   queue_type=kfd.KFD_IOC_QUEUE_TYPE_COMPUTE, queue_percentage=kfd.KFD_MAX_QUEUE_PERCENTAGE, queue_priority=kfd.KFD_MAX_QUEUE_PRIORITY,
-        #   eop_buffer_address=self.eop_pm4_buffer.va_addr, eop_buffer_size=self.eop_pm4_buffer.size,
-        #   ctx_save_restore_address=self.pm4_ctx_save_restore_address.va_addr, ctx_save_restore_size=self.pm4_ctx_save_restore_address.size,
-        #   ctl_stack_size = 0xa000,
-        #   write_pointer_address=self.gart_pm4.va_addr, read_pointer_address=self.gart_pm4.va_addr+8)
 
     def _allocate_memory(
         self, size: int, memory_flags: Dict[str, int], map_to_gpu: Optional[bool] = None
@@ -302,6 +300,111 @@ class KFDDevice(MemoryManager):
             mem.mapped_gpu_ids
         ), "Not all GPUs were mapped successfully"
 
+    def _create_event(self, event_page: Optional[object] = None) -> object:
+        """
+        Create a synchronization event for the GPU.
+
+        Args:
+            event_page (Optional[object]): The event page handle. If None, a new event page is created.
+
+        Returns:
+            object: The created synchronization event.
+
+        Raises:
+            AssertionError: If the event creation fails.
+        """
+        if event_page is None:
+            sync_event = self.KFD_IOCTL.create_event(self.kfd, auto_reset=1)
+        else:
+            sync_event = self.KFD_IOCTL.create_event(self.kfd, event_page_offset=event_page.handle, auto_reset=1)
+        
+        assert sync_event is not None, "Failed to create event."
+        return sync_event
+
+    def _create_aql_queue(self) -> object:
+        """
+        Create an Asynchronous Queuing Library (AQL) queue for the GPU with specified configuration.
+
+        This function sets up an AQL queue which is used for dispatching compute commands to the GPU.
+
+        Returns:
+            object: The created AQL queue.
+        """
+        aql_queue = self.KFD_IOCTL.create_queue(
+            KFDDevice.kfd,
+            ring_base_address=self.aql_ring.va_addr,
+            ring_size=self.aql_ring.size,
+            gpu_id=self.gpu_id,
+            queue_type=kfd.KFD_IOC_QUEUE_TYPE_COMPUTE_AQL,
+            queue_percentage=kfd.KFD_MAX_QUEUE_PERCENTAGE,
+            queue_priority=kfd.KFD_MAX_QUEUE_PRIORITY,
+            eop_buffer_address=self.eop_buffer.va_addr,
+            eop_buffer_size=self.eop_buffer.size,
+            ctx_save_restore_address=self.ctx_save_restore_address.va_addr,
+            ctx_save_restore_size=self.ctx_save_restore_address.size,
+            ctl_stack_size=0xa000,
+            write_pointer_address=self.gart_aql.va_addr,
+            read_pointer_address=self.gart_aql.va_addr + 8,
+        )
+        return aql_queue
+
+    def _create_sdma_queue(self) -> object:
+        """
+        Create an SDMA (System Direct Memory Access) queue for the GPU with specified configuration.
+
+        This function sets up an SDMA queue which is used for efficient data transfers between memory regions on the GPU.
+
+        Returns:
+            object: The created SDMA queue.
+        """
+        sdma_queue = self.KFD_IOCTL.create_queue(
+            self.kfd,
+            ring_base_address=self.sdma_ring.va_addr,
+            ring_size=self.sdma_ring.size,
+            gpu_id=self.gpu_id,
+            queue_type=kfd.KFD_IOC_QUEUE_TYPE_SDMA,
+            queue_percentage=kfd.KFD_MAX_QUEUE_PERCENTAGE,
+            queue_priority=kfd.KFD_MAX_QUEUE_PRIORITY,
+            write_pointer_address=self.gart_sdma.va_addr,
+            read_pointer_address=self.gart_sdma.va_addr + 8,
+        )
+        return sdma_queue
+
+    def _create_sdma_packets(self) -> type:
+        """
+        Create SDMA packet structures for various operations on the GPU.
+
+        This function dynamically generates and returns a class containing SDMA packet structures,
+        which can be used for constructing and submitting SDMA commands.
+
+        Returns:
+            type: A dynamically created class containing SDMA packet structures.
+        """
+        structs = {}
+        packet_definitions = {
+            name: struct
+            for name, struct in amd_gpu.__dict__.items()
+            if name.startswith("struct_SDMA_PKT_") and name.endswith("_TAG")
+        }
+
+        for name, pkt in packet_definitions.items():
+            fields, names = [], set()
+
+            for field_name, field_type in pkt._fields_:
+                if field_name.endswith("_UNION"):
+                    handle_union_field(fields, field_name, field_type, names)
+                else:
+                    fields.append((field_name, field_type))
+
+            # Structure renaming for consistency and readability
+            new_name = name[16:-4].lower()
+            struct_type = init_c_struct_t(tuple(fields))
+            structs[new_name] = struct_type
+
+            assert_size_matches(struct_type, pkt)
+
+        return type("SDMA_PKTS", (object,), structs)
+
     def free_gpu_memory(self, memory: Any) -> None:
         """
         Unmaps memory from the GPUs and frees it.
@@ -337,29 +440,3 @@ class KFDDevice(MemoryManager):
 
         except Exception as e:
             raise OSError(f"Error freeing GPU memeory: {e}")
-
-    def create_sdma_packets(self):
-        structs = {}
-        packet_definitions = {
-            name: struct
-            for name, struct in amd_gpu.__dict__.items()
-            if name.startswith("struct_SDMA_PKT_") and name.endswith("_TAG")
-        }
-
-        for name, pkt in packet_definitions.items():
-            fields, names = [], set()
-
-            for field_name, field_type in pkt._fields_:
-                if field_name.endswith("_UNION"):
-                    handle_union_field(fields, field_name, field_type, names)
-                else:
-                    fields.append((field_name, field_type))
-
-            # Structure renaming for consistency and readability
-            new_name = name[16:-4].lower()
-            struct_type = init_c_struct_t(tuple(fields))
-            structs[new_name] = struct_type
-
-            assert_size_matches(struct_type, pkt)
-
-        return type("SDMA_PKTS", (object,), structs)

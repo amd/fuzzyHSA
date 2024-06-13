@@ -58,12 +58,14 @@ def query_attributes(obj: Any) -> Dict[str, Any]:
     }
     return members_dict
 
+
 def read_file(path: Path) -> int:
     """
     Helper method to read a single value from a file and convert it to an integer.
     """
     with open(path, "r") as file:
         return int(file.read().strip())
+
 
 def read_properties(path: Path) -> dict:
     """

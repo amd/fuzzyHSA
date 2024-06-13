@@ -58,14 +58,11 @@ def kfd_ioctl(
     made = made_struct or user_struct(**kwargs)
     if fd < 0 or os.fstat(fd).st_nlink == 0:
         raise ValueError("Invalid or closed file descriptor")
-    try:
-        ret = fcntl.ioctl(
-            fd, (idir << 30) | (ctypes.sizeof(made) << 16) | (ord("K") << 8) | nr, made
-        )
-    except OSError as e:
-        raise RuntimeError(
-            f"IOCTL operation failed with system error: {os.strerror(e.errno)}"
-        ) from e
+    ret = fcntl.ioctl(
+        fd, (idir << 30) | (ctypes.sizeof(made) << 16) | (ord("K") << 8) | nr, made
+    )
+    if ret != 0:
+        raise RuntimeError(f"ioctl returned {ret}")
     return made
 
 
@@ -124,3 +121,20 @@ def print_ioctl_functions(self) -> None:
             "__"
         ):
             print(f"  - {func_name}")
+
+def init_c_struct_t(fields: tuple) -> type:
+    """
+    Initialize a C structure type with given fields.
+
+    Args:
+        fields (tuple): Tuple of field names and types.
+
+    Returns:
+        type: The created C structure type.
+    """
+    return type("CStruct", (ctypes.Structure,), {'_fields_': fields})
+
+def round_up(num, amt: int):
+    return (num + amt - 1) // amt * amt
+
+def to_mv(ptr, sz) -> memoryview: return memoryview(ctypes.cast(ptr, ctypes.POINTER(ctypes.c_uint8 * sz)).contents).cast("B")

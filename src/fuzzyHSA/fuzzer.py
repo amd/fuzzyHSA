@@ -20,7 +20,7 @@ def main():
     try:
         check_generated_files(REQUIRED_FILES)
         print("All required files are present. Continuing with main execution.")
-        # TODO: continue main execution here
+        device = KFDDevice("HSA")
     except RuntimeError as e:
         print(f"Startup Error: {e}")
         return
@@ -28,3 +28,41 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Example of API
+# # Initialize device
+# device = GPUDevice()
+#
+# # Allocate memory
+# mem = GPUMemory(device, size=1024, host_accessible=True)
+#
+# # Copy data to GPU
+# data = memoryview(bytearray(b"some_data"))
+# mem.copy_from_host(data)
+#
+# # Compile and load program
+# source_code = """
+# __global__ void my_kernel(float *a) {
+#     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+#     a[idx] = a[idx] * 2.0;
+# }
+# """
+# program = GPUProgram(device, source_code, "my_kernel")
+#
+# # Create queues
+# cp_queue = CommandProcessorQueue(device)
+# sdma_queue = SDMAQueue(device)
+#
+# # Execute program
+# cp_queue.execute(program, mem.memory, global_size=(64, 1, 1), local_size=(64, 1, 1))
+#
+# # Copy data back to host
+# result = memoryview(bytearray(1024))
+# mem.copy_to_host(result)
+#
+# # Free memory
+# mem.free()
+#
+# # Synchronize device
+# device.synchronize()
+#
