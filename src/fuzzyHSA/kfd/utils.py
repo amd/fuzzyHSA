@@ -16,7 +16,7 @@ import re
 import functools
 import fcntl
 import os
-from typing import Type, Any
+from typing import Type, Any, Tuple
 
 # importing generated files via the fuzzyHSA package
 import fuzzyHSA.kfd.autogen.kfd as kfd
@@ -122,17 +122,10 @@ def print_ioctl_functions(self) -> None:
         ):
             print(f"  - {func_name}")
 
-def init_c_struct_t(fields: tuple) -> type:
-    """
-    Initialize a C structure type with given fields.
-
-    Args:
-        fields (tuple): Tuple of field names and types.
-
-    Returns:
-        type: The created C structure type.
-    """
-    return type("CStruct", (ctypes.Structure,), {'_fields_': fields})
+def init_c_struct_t(fields: Tuple[Tuple[str, ctypes._SimpleCData], ...]):
+  class CStruct(ctypes.Structure):
+    _pack_, _fields_ = 1, fields
+  return CStruct
 
 def round_up(num, amt: int):
     return (num + amt - 1) // amt * amt

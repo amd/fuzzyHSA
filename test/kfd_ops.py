@@ -1,9 +1,10 @@
 import ctypes, mmap
-import pprint
 import pytest
-from fuzzyHSA.utils import query_attributes
+from typing import Any
 from fuzzyHSA.kfd.ops import KFDDevice
+from fuzzyHSA.utils import query_attributes
 import fuzzyHSA.kfd.autogen.kfd as kfd  # importing generated files via the fuzzyHSA package
+import fuzzyHSA.kfd.autogen.hsa as hsa
 
 
 @pytest.fixture(scope="module")
@@ -12,13 +13,8 @@ def kfd_device():
     Fixture to create and return a KFDDevice instance for testing,
     with automatic cleanup to close the device after tests are completed.
     """
-    device = None
-    try:
-        device = KFDDevice("KFD:0")  # TODO: should handle multiple devices
+    with KFDDevice("KFD:0") as device:
         yield device
-    finally:
-        if device:
-            device.close()
 
 
 MAP_FIXED, MAP_NORESERVE = 0x10, 0x400
@@ -96,6 +92,11 @@ class TestKFDDeviceHardwareIntegration:
             ("map_memory_to_gpu", self._test_map_memory_to_gpu),
             ("create_event", self._test_create_event),
             ("create_queue", self._test_create_queue),
+            ("unmap_memory_of_gpu", self._test_unmap_memory_of_gpu),
+            ("create_queue", self._test_create_queue),
+            ("unmap_memory_of_gpu", self._test_unmap_memory_of_gpu),
+            ("free_memory_of_gpu", self._test_free_memory_of_gpu),
+            ("wait_signal", self._test_wait_signal),
             # TODO: List above
         ]
         results = {}
@@ -166,6 +167,96 @@ class TestKFDDeviceHardwareIntegration:
         )
         assert stm.n_success == len(mem.mapped_gpu_ids)
 
+    def _test_unmap_memory_of_gpu(self, kfd_device):
+        size = 0x1000
+        addr_flags = mmap.MAP_SHARED | mmap.MAP_ANONYMOUS
+
+        addr = kfd_device.mmap(size=size, prot=0, flags=addr_flags, fd=-1, offset=0)
+
+        flags = kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT
+        mem = kfd_device.KFD_IOCTL.alloc_memory_of_gpu(
+            kfd_device.kfd,
+            va_addr=addr,
+            size=size,
+            gpu_id=kfd_device.gpu_id,
+            flags=flags,
+            mmap_offset=0,
+        )
+        if len(gpus:=getattr(mem, "mapped_gpu_ids", [])):
+            c_gpus = (ctypes.c_int32 * len(gpus))(*gpus)
+            stm = kfd_device.KFD_IOCTL.unmap_memory_from_gpu(KFDDevice.kfd, handle=mem.handle, device_ids_array_ptr=ctypes.addressof(c_gpus), n_devices=len(gpus))
+            assert stm.n_success == len(gpus)
+
+    def _test_free_memory_of_gpu(self, kfd_device):
+        size = 0x1000
+        addr_flags = mmap.MAP_SHARED | mmap.MAP_ANONYMOUS
+
+        addr = kfd_device.mmap(size=size, prot=0, flags=addr_flags, fd=-1, offset=0)
+
+        flags = kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT
+        mem = kfd_device.KFD_IOCTL.alloc_memory_of_gpu(
+            kfd_device.kfd,
+            va_addr=addr,
+            size=size,
+            gpu_id=kfd_device.gpu_id,
+            flags=flags,
+            mmap_offset=0,
+        )
+        if len(gpus:=getattr(mem, "mapped_gpu_ids", [])):
+            c_gpus = (ctypes.c_int32 * len(gpus))(*gpus)
+            stm = kfd_device.KFD_IOCTL.unmap_memory_from_gpu(KFDDevice.kfd, handle=mem.handle, device_ids_array_ptr=ctypes.addressof(c_gpus), n_devices=len(gpus))
+            assert stm.n_success == len(gpus)
+        kfd_device.munmap(mem.va_addr, mem.size)
+        kfd_device.KFD_IOCTL.free_memory_of_gpu(KFDDevice.kfd, handle=mem.handle)
+
+    def _test_wait_signal(self, kfd_device):
+        """
+        Test waiting on a signal.
+
+        Args:
+            kfd_device (KFDDevice): The KFD device instance.
+        """
+        # Create a signal instance and initialize it properly
+        signal_number:int = 16
+        flags_config = {
+            "mmap_prot": mmap.PROT_READ | mmap.PROT_WRITE,
+            "mmap_flags": mmap.MAP_SHARED | mmap.MAP_ANONYMOUS,
+            "kfd_flags": kfd.KFD_IOC_ALLOC_MEM_FLAGS_GTT
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_COHERENT
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE
+            | kfd.KFD_IOC_ALLOC_MEM_FLAGS_NO_SUBSTITUTE,
+        }
+        SIGNAL_SIZE, SIGNAL_COUNT = ctypes.sizeof(hsa.amd_signal_t), 16384
+        signals_page = kfd_device.allocate_memory_of_gpu(SIGNAL_SIZE*SIGNAL_COUNT, flags_config)
+
+        signal = hsa.amd_signal_t.from_address(signals_page.va_addr + SIGNAL_SIZE*signal_number)
+        signal.kind = hsa.AMD_SIGNAL_KIND_USER
+        sync_event = kfd_device.create_event()
+        signal.event_mailbox_ptr = KFDDevice.event_page.va_addr + sync_event.event_slot_index*8
+        signal.event_id = sync_event.event_id
+
+        assert signal.event_id != 0, "can't wait on this signal"
+         
+        # Create an event data array and set its event_id
+        evt_arr = (kfd.struct_kfd_event_data * 1)()
+        evt_arr[0].event_id = signal.event_id
+
+        # Call the wait_events function
+        ret = kfd_device.KFD_IOCTL.wait_events(
+            KFDDevice.kfd, 
+            events_ptr=ctypes.addressof(evt_arr), 
+            num_events=1, 
+            wait_for_all=1, 
+            timeout=60000
+         )
+         
+        if ret.wait_result != 0:
+            raise RuntimeError(f"wait_result: {ret.wait_result}, 60001 ms TIMEOUT!")
+
+
+
     def _test_create_event(self, kfd_device):
         memory_flags_config = {
             "mmap_prot": mmap.PROT_READ | mmap.PROT_WRITE,
@@ -179,7 +270,7 @@ class TestKFDDeviceHardwareIntegration:
         }
 
         memory_size = 0x8000
-        KFDDevice.event_page = kfd_device.allocate_memory(
+        KFDDevice.event_page = kfd_device.allocate_memory_of_gpu(
             memory_size, memory_flags_config, map_to_gpu=True
         )
         sync_event = kfd_device.KFD_IOCTL.create_event(
@@ -203,7 +294,7 @@ class TestKFDDeviceHardwareIntegration:
             | kfd.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED,
         }
 
-        sdma_ring = kfd_device.allocate_memory(
+        sdma_ring = kfd_device.allocate_memory_of_gpu(
             0x100000, sdma_ring_flags_config, map_to_gpu=True
         )
 
@@ -217,7 +308,7 @@ class TestKFDDeviceHardwareIntegration:
             | kfd.KFD_IOC_ALLOC_MEM_FLAGS_COHERENT
             | kfd.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED,
         }
-        gart_sdma = kfd_device.allocate_memory(
+        gart_sdma = kfd_device.allocate_memory_of_gpu(
             0x1000, gart_flags_config, map_to_gpu=True
         )
 
