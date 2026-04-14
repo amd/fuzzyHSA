@@ -30,7 +30,7 @@ fuzzyHSA = "fuzzyHSA.cli:main"
 [dependency-groups]
 dev = [
     "ctypesgen>=1.1.1",
-    "pytest>=7.0",
+    "pytest>=9.0.3",
     "pytest-timeout>=2.0",
     "ruff>=0.4.0",
 ]
