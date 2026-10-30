@@ -124,12 +124,21 @@ def run_campaign_isolated(gpu_index: int, packet: str, seed: int, n: int, record
     rec = Recorder(record_root)
     done, hard_crashes, wedged = 0, 0, False
     stall = 0
+    resolved: set[int] = set()        # resolved case indices, accumulated incrementally
+    offset = 0                        # manifest byte cursor -> O(N) total scan, not O(N^2)
     while done < n:
         conf = _Conf(gpu_index, packet, seed, n, done, str(record_root), campaign_id,
                      spec_version, fw_version, timeout_ms, field_weights, modes)
         _spawn(conf, worker_timeout)
 
-        resolved = _resolved_indices(rec, campaign_id, n)
+        new, offset = rec.tail_records(offset)                # only the lines this worker appended
+        for r in new:
+            rid = r.get("id", "")
+            if r.get("status") == "resolved" and rid.startswith(campaign_id + "-"):
+                try:
+                    resolved.add(int(rid.rsplit("-", 1)[1]))
+                except ValueError:
+                    pass
         new_done = done
         while new_done in resolved:                            # advance over contiguous resolved
             new_done += 1
@@ -137,13 +146,15 @@ def run_campaign_isolated(gpu_index: int, packet: str, seed: int, n: int, record
             stall = 0
             done = new_done
             continue
-        # no progress: the pending case at `done` crashed the worker before it classified
+        # no progress: the pending case at `done` crashed the worker before it classified. We
+        # only reach here when `done` is unresolved (the while loop didn't advance), so there is
+        # by construction no finding for it — mark it unconditionally; probing rec.finding() here
+        # would re-scan the whole manifest (O(N^2) on the wedge/hang path) to answer a known None.
         cid = _case_id(conf, done)
-        if rec.finding(cid) is None:
-            rec.resolve(cid, FindingClass.OS_KERNEL_BUG.value,
-                        dedup_sig(FindingClass.OS_KERNEL_BUG, packet, "?", "hard_crash"),
-                        {"id": cid, "cls": "os_kernel_bug", "note": "worker died before classify",
-                         "dedup_sig": dedup_sig(FindingClass.OS_KERNEL_BUG, packet, "?", "hard_crash")})
+        sig = dedup_sig(FindingClass.OS_KERNEL_BUG, packet, "?", "hard_crash")
+        rec.resolve(cid, FindingClass.OS_KERNEL_BUG.value, sig,
+                    {"id": cid, "cls": "os_kernel_bug", "note": "worker died before classify",
+                     "dedup_sig": sig})
         hard_crashes += 1
         done += 1
         stall += 1
@@ -154,18 +165,6 @@ def run_campaign_isolated(gpu_index: int, packet: str, seed: int, n: int, record
             break
 
     return _aggregate(rec, campaign_id, n, wedged, hard_crashes)
-
-
-def _resolved_indices(rec: Recorder, campaign_id: str, n: int) -> set[int]:
-    out = set()
-    for r in rec.records():
-        rid = r.get("id", "")
-        if r.get("status") == "resolved" and rid.startswith(campaign_id + "-"):
-            try:
-                out.add(int(rid.rsplit("-", 1)[1]))
-            except ValueError:
-                pass
-    return out
 
 
 def _aggregate(rec: Recorder, campaign_id: str, n: int, wedged: bool, hard_crashes: int) -> HwCampaignResult:

@@ -81,6 +81,27 @@ class Recorder:
         """Latest manifest record per case (latest line wins)."""
         return list(self._latest().values())
 
+    def tail_records(self, offset: int) -> tuple[list[dict], int]:
+        """Parse only the manifest lines at/after byte ``offset``; return (new_records, new_offset).
+        Lets a long campaign advance without re-parsing the whole manifest each respawn — O(N)
+        total instead of O(N^2). The caller must read only when the manifest is quiescent (the
+        writing worker has exited), so ``offset`` always lands on a line boundary."""
+        if not self.manifest.exists():
+            return [], offset
+        with open(self.manifest, "rb") as f:
+            f.seek(offset)
+            data = f.read()
+        out: list[dict] = []
+        consumed = 0
+        for raw in data.splitlines(keepends=True):     # keepends: advance offset by exact bytes
+            if raw.strip():
+                try:
+                    out.append(json.loads(raw))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    break                               # torn tail line -> stop before it, re-read later
+            consumed += len(raw)
+        return out, offset + consumed
+
     def buckets(self) -> dict[str, dict]:
         """One row per dedup bucket: ``sig -> {dedup_sig, cls, count, exemplar_id}``.
         Counts ALL resolved finding cases; the exemplar holds the full record."""

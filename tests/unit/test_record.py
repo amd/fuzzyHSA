@@ -49,3 +49,35 @@ def test_crash_between_record_and_resolve_leaves_pending(tmp_path):
     r.resolve("a", "ok", "s", None)
     # a fresh Recorder over the same dir sees "b" as the unresolved culprit
     assert Recorder(tmp_path).pending_ids() == ["b"]
+
+
+def test_tail_records_is_incremental(tmp_path):
+    # the runner reads only NEW manifest lines per respawn (O(N) total, not O(N^2) re-scan)
+    from fuzzyHSA.campaign.finding import Recipe
+    rec = Recorder(tmp_path)
+    r = Recipe(0, "v", "f", "COPY_DATA", None, None)
+    rec.record_pending("c-000000", r, [1])
+    rec.resolve("c-000000", "ok", "s0", None)
+    first, off = rec.tail_records(0)
+    assert [x["id"] for x in first] == ["c-000000", "c-000000"]  # pending + resolved lines
+    # nothing new -> empty, offset unchanged
+    none, off2 = rec.tail_records(off)
+    assert none == [] and off2 == off
+    # append more; tail from the cursor returns only the new lines
+    rec.record_pending("c-000001", r, [2])
+    rec.resolve("c-000001", "vm_fault", "s1", {"id": "c-000001"})
+    new, off3 = rec.tail_records(off)
+    assert [x["id"] for x in new] == ["c-000001", "c-000001"] and off3 > off
+
+
+def test_tail_records_fail_soft_on_torn_line(tmp_path):
+    # a terminate() mid-append could leave a partial last line; tail must not crash the campaign
+    rec = Recorder(tmp_path)
+    with open(rec.manifest, "wb") as f:
+        f.write(b'{"id":"a","status":"resolved"}\n{"id":"b","stat')   # complete + torn
+    recs, off = rec.tail_records(0)
+    assert [r["id"] for r in recs] == ["a"]            # only the complete line consumed
+    with open(rec.manifest, "ab") as f:
+        f.write(b'us":"resolved"}\n')                  # the torn line later completes
+    recs2, off2 = rec.tail_records(off)
+    assert [r["id"] for r in recs2] == ["b"] and off2 > off
