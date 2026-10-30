@@ -159,6 +159,33 @@ def cmd_campaign_start(args) -> int:
     })
 
 
+def cmd_isolation_start(args) -> int:
+    """Cross-process isolation probe (D6): a victim holds a canary; attacker processes try to
+    reach it. Fires ISOLATION_BREAK iff the victim's memory was reached from another process."""
+    p = _load_json_arg(args.json)
+    from .campaign.guard import Denied, Guard
+    from .campaign.isolation import run_isolation_campaign
+    from .hw.rocm import rocm_showpids
+
+    gpu_index = int(p.get("gpu_index", 0))
+    record_root = Path(p.get("record_root", "./findings"))
+    guard = Guard()
+    campaign_id = p.get("campaign_id", "iso")
+    try:
+        guard.claim_gpu(gpu_index, campaign_id, rocm_showpids)
+    except Denied as d:
+        return _envelope("isolation.start", error=_err(d.code, str(d)))
+    try:
+        r = run_isolation_campaign(gpu_index, record_root, campaign_id=campaign_id, guard=guard)
+    finally:
+        guard.release_gpu(gpu_index)
+    return _envelope("isolation.start", {
+        "campaign_id": campaign_id, "status": r.status, "broke": r.broke, "offset": r.offset,
+        "path_ok": r.path_ok, "executed": r.executed, "attempts": r.attempts,
+        "finding": r.finding, "record_root": str(record_root),
+    })
+
+
 def cmd_campaign_status(args) -> int:
     p = _load_json_arg(args.json)
     s = _recorder(args, p).summary()
@@ -175,6 +202,7 @@ def main(argv=None) -> int:
     for name, fn in [
         ("decode", cmd_decode), ("spec-validate", cmd_spec_validate),
         ("campaign-start", cmd_campaign_start), ("campaign-status", cmd_campaign_status),
+        ("isolation-start", cmd_isolation_start),
         ("findings-list", cmd_findings_list), ("findings-get", cmd_findings_get),
     ]:
         sp = sub.add_parser(name)

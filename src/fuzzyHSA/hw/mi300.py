@@ -242,6 +242,12 @@ class Mi300Backend:
         bo_vas = {"src": self._src.addr, "dst": self._dst.addr}
         return build_stream(case, bo_vas, self._signal.addr)
 
+    def materialize_at(self, case: GenCase, dst_va: int) -> list[int]:
+        """Like ``materialize`` but the case's ``dst`` resolves to an arbitrary VA — used by the
+        isolation attacker to aim a write at ANOTHER process's GPU VA."""
+        bo_vas = {"src": self._src.addr, "dst": dst_va}
+        return build_stream(case, bo_vas, self._signal.addr)
+
     # --- submit -----------------------------------------------------------
     def submit(self, dwords: list[int]) -> None:
         self._write_signal(0)
@@ -280,6 +286,70 @@ class Mi300Backend:
             return None
         i = next(k for k in range(_CANARY_LEN) if got[k] != self._canary[k])
         return _CANARY_OFF + i
+
+    # --- D6 cross-process isolation primitives ----------------------------
+    # The VICTIM fills its whole dst BO with a known word and publishes that BO's GPU VA; it
+    # runs no packets, so the region stays constant unless ANOTHER process writes it. The
+    # ATTACKER, in a separate VM, aims a write at that VA. If the victim's word changed, a
+    # packet in one process reached another's memory -> ISOLATION_BREAK.
+    def arm_canary(self, word: int) -> int:
+        """Fill the whole dst BO with ``word`` and return its GPU VA (the victim's target)."""
+        ctypes.memmove(self._dst.addr, struct.pack("<I", word) * (_DST_SIZE // 4), _DST_SIZE)
+        return self._dst.addr
+
+    def verify_canary(self, word: int) -> int | None:
+        """Byte offset of the first word that is no longer ``word``, or None if intact."""
+        want = struct.pack("<I", word) * (_DST_SIZE // 4)
+        got = ctypes.string_at(self._dst.addr, _DST_SIZE)
+        if got == want:
+            return None
+        return next(k for k in range(_DST_SIZE) if got[k] != want[k])
+
+    def _dst_word0(self) -> int:
+        return ctypes.cast(self._dst.addr, ctypes.POINTER(ctypes.c_uint32))[0]
+
+    def self_write_probe(self, poison: int) -> bool:
+        """POSITIVE CONTROL for the attack path: WRITE_DATA poison -> our OWN dst[0] (a reachable,
+        mapped VA) must land and be CPU-visible. If this returns False the write path is broken
+        and ANY 'isolation holds' negative is vacuous — the attack never actually wrote anything."""
+        from ..fuzz.gen import MAPPED, GenCase
+        from ..pm4.spec import WRITE_DATA, baseline_values
+        ctypes.cast(self._dst.addr, ctypes.POINTER(ctypes.c_uint32))[0] = 0  # clear the target word
+        v = baseline_values(WRITE_DATA)
+        v.update(dst_sel=2, engine_sel=0, wr_confirm=1,
+                 dst_addr_lo=MAPPED, dst_addr_hi=MAPPED, data0=poison)
+        dw = self.materialize_at(GenCase(WRITE_DATA, v, "self_probe", None), self._dst.addr)
+        self.submit(dw)
+        self.observe(800.0)
+        return self._dst_word0() == poison
+
+    def attack_write(self, target_va: int, poison: int, dst_sel: int) -> RawSignals:
+        """One cross-process attempt: WRITE_DATA poison -> target_va via a memory selector
+        (dst_sel 2=TC/L2, 5=memory; engine fixed 0 since engine_sel is reserved on MEC). In a
+        sound system target_va is unmapped in this VM -> MEMORY fault (contained); a completion
+        that moves the victim's word means the selector bypassed the per-process VM."""
+        from ..fuzz.gen import MAPPED, GenCase
+        from ..pm4.spec import WRITE_DATA, baseline_values
+        v = baseline_values(WRITE_DATA)
+        v.update(dst_sel=dst_sel, engine_sel=0, wr_confirm=1,
+                 dst_addr_lo=MAPPED, dst_addr_hi=MAPPED, data0=poison)
+        dw = self.materialize_at(GenCase(WRITE_DATA, v, f"iso:write,dst_sel={dst_sel}", None), target_va)
+        self.submit(dw)
+        return self.observe(800.0)
+
+    def attack_dma_absolute(self, target_va: int, poison: int) -> RawSignals:
+        """A stronger surface than a plain GPUVM write: DMA_DATA with DAS=1 (dst in the
+        system/absolute address space) aims poison at target_va OUTSIDE normal GPUVM translation —
+        the channel by which bad firmware could let an absolute address reach another process."""
+        from ..fuzz.gen import MAPPED, GenCase
+        from ..pm4.spec import DMA_DATA, baseline_values
+        v = baseline_values(DMA_DATA)
+        v.update(src_sel=2, dst_sel=0, cp_sync=1, byte_count=4, cmd_das=1,
+                 src_addr_lo=poison, src_addr_hi=0,          # src_sel=2 -> src addr is immediate data
+                 dst_addr_lo=MAPPED, dst_addr_hi=MAPPED)
+        dw = self.materialize_at(GenCase(DMA_DATA, v, "iso:dma_das", None), target_va)
+        self.submit(dw)
+        return self.observe(800.0)
 
     # --- observe: completion (signal VA) + fault events (WAIT_EVENTS) -----
     def _clear_events(self) -> None:
