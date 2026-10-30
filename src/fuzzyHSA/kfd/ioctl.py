@@ -19,22 +19,30 @@ _IOC_READ = 2
 # KFD ioctl type character
 _IOC_TYPE = ord("K")
 
-# Regex patterns for parsing ioctl definitions from autogen
-# clang2py format: # AMDKFD_IOC_X = _IOWR('K', nr, type) (0x18, struct name) # macro
-_CLANG2PY_PATTERN = re.compile(
-    r"# (AMDKFD_IOC_[A-Z0-9_]+) = (_IOWR?)\('K',\s*nr,\s*type\) "
-    r"\(\s*(0x[0-9a-fA-F]+)\s*,\s*struct\s+([A-Za-z0-9_]+)\s*\) # macro"
-)
-# ctypesgen format: AMDKFD_IOC_X = _IOWR(ord('K'), 0x18, struct_name)
+# Parse ioctl definitions out of the ctypesgen-generated module source.
+# ctypesgen (>=1.1.1) emits each as: AMDKFD_IOC_X = (AMDKFD_IOWR (0x02, struct_name))
+# using the header's AMDKFD_IO/IOR/IOW/IOWR wrappers. The direction alternation lists
+# IOWR before IOW/IOR so the longest token wins; matching read-only AMDKFD_IOR is what
+# recovers GET_VERSION and GET_PROCESS_APERTURES. IoctlDef.cmd recomputes the command
+# number from sizeof, so only direction + number + struct name are needed here.
+# ponytail: regex-over-generated-source is brittle (this already broke once when the
+# ctypesgen output format differed). Upgrade path if it breaks again: import the module
+# and read the AMDKFD_IOC_* values + struct types directly instead of parsing text.
 _CTYPESGEN_PATTERN = re.compile(
-    r"(AMDKFD_IOC_[A-Z0-9_]+)\s*=\s*(_IOWR?)\s*\(\s*ord\s*\(\s*['\"]K['\"]\s*\)\s*,\s*"
+    r"(AMDKFD_IOC_[A-Z0-9_]+)\s*=\s*\(?\s*AMDKFD_(IOWR|IOW|IOR|IO)\s*\(\s*"
+    r"(0x[0-9a-fA-F]+)\s*,\s*([A-Za-z0-9_]+)\s*\)"
+)
+# Legacy ctypesgen/clang2py form: AMDKFD_IOC_X = _IOWR(ord('K'), 0x18, struct_name)
+_LEGACY_PATTERN = re.compile(
+    r"(AMDKFD_IOC_[A-Z0-9_]+)\s*=\s*_(IOWR|IOW|IOR|IO)\s*\(\s*ord\s*\(\s*['\"]K['\"]\s*\)\s*,\s*"
     r"(0x[0-9a-fA-F]+)\s*,\s*([A-Za-z0-9_]+)\s*\)"
 )
 
 _DIRECTION_MAP = {
-    "_IOW": _IOC_WRITE,
-    "_IOR": _IOC_READ,
-    "_IOWR": _IOC_WRITE | _IOC_READ,
+    "IO": 0,
+    "IOW": _IOC_WRITE,
+    "IOR": _IOC_READ,
+    "IOWR": _IOC_WRITE | _IOC_READ,
 }
 
 
@@ -215,8 +223,8 @@ def _parse_ioctls_from_module(kfd_module: Any, source_path: Path) -> IoctlCollec
     source = source_path.read_text()
     ioctls: dict[str, IoctlDef] = {}
 
-    # Try both patterns (clang2py and ctypesgen)
-    for pattern in (_CLANG2PY_PATTERN, _CTYPESGEN_PATTERN):
+    # Try the current ctypesgen format first, then the legacy form.
+    for pattern in (_CTYPESGEN_PATTERN, _LEGACY_PATTERN):
         for match in pattern.finditer(source):
             full_name, direction_str, number_hex, struct_name = match.groups()
             name = full_name.replace("AMDKFD_IOC_", "").lower()

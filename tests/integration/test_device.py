@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Integration tests for KFD device operations (requires AMD GPU)."""
 
+import os
+
 import pytest
 
 from fuzzyHSA.kfd import KFDDevice, discover_gpus
-from fuzzyHSA.monitor import is_kfd_available
 
 
 @pytest.mark.integration
@@ -48,4 +49,4 @@ class TestKFDDevice:
 @pytest.mark.integration
 class TestKFDAvailability:
     def test_kfd_available(self):
-        assert is_kfd_available(), "/dev/kfd not accessible"
+        assert os.path.exists("/dev/kfd") and os.access("/dev/kfd", os.R_OK | os.W_OK), "/dev/kfd not accessible"

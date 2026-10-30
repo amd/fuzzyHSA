@@ -1,250 +1,190 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Command-line interface for fuzzyHSA."""
+"""Agent command surface (ticket 07).
 
+Every command emits one JSON envelope ``{ok, cmd, data, error}`` to stdout; the exit
+code mirrors ``ok``. No prose, ever — an agent branches on ``ok`` + ``error.code``.
+Findings are returned as decoded named-field streams and one row per dedup bucket,
+never hex, never logs.
+
+Slice-1 subset: ``campaign start/status``, ``findings list/get``, ``decode``,
+``spec validate``. ``repro`` / ``minimize`` and an async campaign daemon are deferred.
+"""
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 
-def cmd_fuzz(args: argparse.Namespace) -> int:
-    """Run the fuzzer."""
-    from .fuzz import FuzzHarness, HarnessConfig, IoctlTarget
-    from .kfd import KFDDevice, get_ioctls
-    from .logging import CrashLogger
-    from .monitor import DmesgMonitor
-
-    # Check for autogen files
-    try:
-        get_ioctls()
-    except Exception as e:
-        print("Error: Could not load KFD ioctls. Generate bindings first:")
-        print("  pip install ctypesgen")
-        print("  python generate_bindings.py")
-        print(f"Details: {e}")
-        return 1
-
-    # Open device
-    try:
-        device = KFDDevice(args.device)
-        device.open()
-    except Exception as e:
-        print(f"Error: Could not open KFD device: {e}")
-        return 1
-
-    try:
-        # Set up components
-        target = IoctlTarget(device, skip_dangerous=not args.dangerous)
-        monitor = DmesgMonitor()
-        logger = CrashLogger(Path(args.output))
-
-        config = HarnessConfig(
-            iterations=args.iterations,
-            seed=args.seed,
-            stop_on_crash=not args.continue_on_crash,
-            stop_on_hang=True,
-            verbose=args.verbose,
-            operations=args.operations.split(",") if args.operations else None,
-        )
-
-        harness = FuzzHarness(target, config, monitor, logger)
-
-        print("fuzzyHSA - KFD/GPU Fuzzer")
-        print(f"  Device: {device}")
-        print(f"  Target: {target.name} ({len(target.operations)} operations)")
-        print(f"  Iterations: {args.iterations}")
-        print(f"  Output: {args.output}")
-        print()
-
-        results = harness.run()
-
-        if results:
-            print(f"\nFound {len(results)} interesting results:")
-            for r in results:
-                print(f"  - {r.status.value}: {r.case.operation} (seed={r.case.seed})")
-
-        return 0 if not results else 2  # Exit code 2 = crashes found
-
-    finally:
-        device.close()
+def _envelope(cmd: str, data=None, error=None) -> int:
+    print(json.dumps({"ok": error is None, "cmd": cmd, "data": data, "error": error}))
+    return 0 if error is None else 1
 
 
-def cmd_list_targets(args: argparse.Namespace) -> int:
-    """List available fuzz targets and operations."""
-    from .kfd import get_ioctls
-
-    try:
-        ioctls = get_ioctls()
-    except Exception as e:
-        print(f"Error: Could not load KFD ioctls: {e}")
-        return 1
-
-    print("Available IOCTL operations:")
-    for name in sorted(ioctls.list_ioctls()):
-        print(f"  {name}")
-
-    return 0
+def _err(code: str, msg: str) -> dict:
+    return {"code": code, "msg": msg}
 
 
-def cmd_reproduce(args: argparse.Namespace) -> int:
-    """Reproduce a crash from a log file."""
-    from .fuzz import IoctlTarget
-    from .kfd import KFDDevice, get_ioctls
-    from .logging import CrashLogger
+def _load_json_arg(raw: str | None) -> dict:
+    if not raw or raw == "-":
+        data = sys.stdin.read().strip()
+        return json.loads(data) if data else {}
+    return json.loads(raw)
 
-    path = Path(args.crash_file)
-    if not path.exists():
-        print(f"Error: File not found: {path}")
-        return 1
 
-    logger = CrashLogger(path.parent)
-    result = logger.load(path)
+# --- pure commands ----------------------------------------------------------
 
-    print("Reproducing crash:")
-    print(f"  Operation: {result.case.operation}")
-    print(f"  Seed: {result.case.seed}")
-    print(f"  Mutation: {result.case.mutation}")
-    print(f"  Input size: {len(result.case.input_data)} bytes")
-    print()
+def cmd_decode(args) -> int:
+    from .pm4.decode import decode
+    p = _load_json_arg(args.json)
+    dwords = p.get("dwords")
+    if dwords is None and p.get("blob"):
+        import struct
+        data = Path(p["blob"]).read_bytes()
+        dwords = list(struct.unpack(f"<{len(data)//4}I", data))
+    if not dwords:
+        return _envelope("decode", error=_err("bad_input", "need dwords[] or blob"))
+    stream = [{"name": d.name, "opcode": d.opcode, "fields": d.fields,
+               "malformed": d.malformed} for d in decode([int(x) for x in dwords])]
+    return _envelope("decode", {"decoded_stream": stream})
 
-    if args.dry_run:
-        print("Dry run - not executing")
-        print(f"Input data (hex): {result.case.input_data.hex()}")
-        return 0
+
+def cmd_spec_validate(args) -> int:
+    from .pm4.spec import REGISTRY
+    errors = []
+    for name, pkt in REGISTRY.items():
+        seen: dict[int, list] = {}
+        for f in pkt.fields:
+            if f.role == "count":
+                continue
+            for bit in range(f.lo, f.hi + 1):
+                key = (f.dw, bit)
+                if key in seen:
+                    errors.append({"packet": name, "field": f.name,
+                                   "msg": f"bit {f.dw}:{bit} overlaps {seen[key]}"})
+                seen[key] = f.name
+    return _envelope("spec.validate", {"ok": not errors, "errors": errors})
+
+
+# --- findings (read via the Recorder, which owns the manifest schema) --------
+
+def _recorder(args, p) -> object:
+    from .campaign.record import Recorder
+    return Recorder(Path(p.get("record_root", args.record_root or ".")))
+
+
+def cmd_findings_list(args) -> int:
+    p = _load_json_arg(args.json)
+    want = p.get("class")
+    rows = [b for b in _recorder(args, p).buckets().values() if not want or b["cls"] == want]
+    return _envelope("findings.list", {"findings": rows})
+
+
+def cmd_findings_get(args) -> int:
+    p = _load_json_arg(args.json)
+    fid = p.get("id")
+    f = _recorder(args, p).finding(fid)
+    if f is None:
+        return _envelope("findings.get", error=_err("no_such_id", f"no finding {fid}"))
+    return _envelope("findings.get", f)
+
+
+# --- campaign (HW, gated) ---------------------------------------------------
+
+def cmd_campaign_start(args) -> int:
+    p = _load_json_arg(args.json)
+    from .campaign.guard import Denied, Guard
+    from .campaign.loop import run_campaign
+    from .campaign.record import Recorder
+    from .fuzz.gen import Pm4Generator
+    from .pm4.spec import REGISTRY
+
+    gpu_index = int(p.get("gpu_index", 0))
+    record_root = Path(p.get("record_root", "./findings"))
+    budget = p.get("budget", {})
+    allow_dangerous = bool(p.get("allow_dangerous", False))
+    backend_name = p.get("backend", "fake")
 
     try:
-        get_ioctls()
-        device = KFDDevice(args.device)
-        device.open()
-    except Exception as e:
-        print(f"Error: {e}")
-        return 1
+        clamped = Guard().check_start(gpu_index, record_root, allow_dangerous, budget)
+    except Denied as d:
+        return _envelope("campaign.start", error=_err(d.code, str(d)))
 
+    iterations = int(clamped.get("iterations", budget.get("iterations", 1000)))
+    packet_name = p.get("packet", "COPY_DATA")
+    seed = int(p.get("seed", 0))
+    guard = Guard()
+    campaign_id = p.get("campaign_id", "c")
+
+    if backend_name == "mi300":
+        # real HW: claim the GPU (fails closed), then run process-isolated so a VM-killing
+        # case can't cascade. The worker subprocesses touch the device; we only orchestrate.
+        from .campaign.hw_runner import run_campaign_isolated
+        from .hw.rocm import rocm_showpids
+        try:
+            guard.claim_gpu(gpu_index, campaign_id, rocm_showpids)
+        except Denied as d:
+            return _envelope("campaign.start", error=_err(d.code, str(d)))
+        try:
+            hr = run_campaign_isolated(
+                gpu_index, packet_name, seed, iterations, record_root,
+                campaign_id=campaign_id, field_weights=p.get("field_weights"),
+                modes=p.get("modes"), guard=guard)
+        finally:
+            guard.release_gpu(gpu_index)
+        return _envelope("campaign.start", {
+            "campaign_id": campaign_id, "status": "wedged" if hr.wedged else "done",
+            "wedged": hr.wedged, "iters": hr.iters, "by_class": hr.by_class,
+            "hard_crashes": hr.hard_crashes,
+            "findings": {"total": sum(b["count"] for b in hr.buckets.values()),
+                         "buckets": len(hr.buckets)},
+            "record_root": str(record_root),
+        })
+
+    # fake backend: in-process (it never wedges)
+    from .hw.fake import FakeGpu
+    packet = REGISTRY[packet_name]
+    gen = Pm4Generator(packet, seed=seed, field_weights=p.get("field_weights"), modes=p.get("modes"))
+    rec = Recorder(record_root)
+    res = run_campaign(gen, FakeGpu(), rec, spec_version="pm4@1", fw_version="unknown",
+                       iterations=iterations, rate_per_s=clamped.get("rate_per_s", 0),
+                       gpu_index=gpu_index, guard=guard, campaign_id=campaign_id)
+    return _envelope("campaign.start", {
+        "campaign_id": campaign_id, "status": res.stopped_reason, "wedged": res.wedged,
+        "iters": res.iters, "by_class": res.by_class,
+        "findings": {"total": sum(b["count"] for b in res.findings.values()),
+                     "buckets": len(res.findings)},
+        "record_root": str(record_root),
+    })
+
+
+def cmd_campaign_status(args) -> int:
+    p = _load_json_arg(args.json)
+    s = _recorder(args, p).summary()
+    return _envelope("campaign.status", {
+        "iters": s["iters"], "by_class": s["by_class"],
+        "findings": {"buckets": s["buckets"]},
+    })
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="fuzzyHSA", description="agent-driven PM4 fuzzer")
+    ap.add_argument("--record-root", default=None, help="findings dir (for read commands)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name, fn in [
+        ("decode", cmd_decode), ("spec-validate", cmd_spec_validate),
+        ("campaign-start", cmd_campaign_start), ("campaign-status", cmd_campaign_status),
+        ("findings-list", cmd_findings_list), ("findings-get", cmd_findings_get),
+    ]:
+        sp = sub.add_parser(name)
+        sp.add_argument("--json", default=None, help="JSON args inline or '-' for stdin")
+        sp.set_defaults(fn=fn)
+    args = ap.parse_args(argv)
     try:
-        target = IoctlTarget(device, skip_dangerous=False)
-        new_result = target.execute(result.case)
-
-        print(f"Result: {new_result.status.value}")
-        if new_result.error_message:
-            print(f"Error: {new_result.error_message}")
-        print(f"Duration: {new_result.duration_ms:.2f}ms")
-
-        return 0 if new_result.status.value == "ok" else 2
-
-    finally:
-        device.close()
-
-
-def cmd_info(args: argparse.Namespace) -> int:
-    """Show system information."""
-    from .kfd import discover_gpus
-    from .monitor import is_kfd_available
-
-    print("fuzzyHSA System Info")
-    print()
-
-    print(f"KFD available: {is_kfd_available()}")
-    print()
-
-    gpus = discover_gpus()
-    if not gpus:
-        print("No AMD GPUs found")
-        return 1
-
-    print(f"Found {len(gpus)} GPU(s):")
-    for i, gpu in enumerate(gpus):
-        print(f"  [{i}] GPU ID: {gpu.gpu_id}")
-        print(f"      Arch: {gpu.arch}")
-        print(f"      DRM: {gpu.drm_path}")
-        print()
-
-    return 0
-
-
-def main() -> int:
-    """Main entry point."""
-    parser = argparse.ArgumentParser(
-        prog="fuzzyHSA",
-        description="KFD/GPU Firmware Fuzzer for AMD GPUs",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # fuzz command
-    fuzz_parser = subparsers.add_parser("fuzz", help="Run the fuzzer")
-    fuzz_parser.add_argument(
-        "-n", "--iterations",
-        type=int,
-        default=1000,
-        help="Number of fuzz iterations (default: 1000)",
-    )
-    fuzz_parser.add_argument(
-        "-s", "--seed",
-        type=int,
-        default=None,
-        help="Random seed for reproducibility",
-    )
-    fuzz_parser.add_argument(
-        "-d", "--device",
-        type=int,
-        default=0,
-        help="GPU device index (default: 0)",
-    )
-    fuzz_parser.add_argument(
-        "-o", "--output",
-        type=str,
-        default="crashes",
-        help="Output directory for crash logs (default: crashes)",
-    )
-    fuzz_parser.add_argument(
-        "--operations",
-        type=str,
-        default=None,
-        help="Comma-separated list of operations to fuzz",
-    )
-    fuzz_parser.add_argument(
-        "--dangerous",
-        action="store_true",
-        help="Include dangerous operations (destroy, free, etc.)",
-    )
-    fuzz_parser.add_argument(
-        "--continue-on-crash",
-        action="store_true",
-        help="Continue fuzzing after finding crashes",
-    )
-    fuzz_parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Verbose output",
-    )
-    fuzz_parser.set_defaults(func=cmd_fuzz)
-
-    # list-targets command
-    list_parser = subparsers.add_parser("list-targets", help="List fuzz targets")
-    list_parser.set_defaults(func=cmd_list_targets)
-
-    # reproduce command
-    repro_parser = subparsers.add_parser("reproduce", help="Reproduce a crash")
-    repro_parser.add_argument("crash_file", help="Path to crash JSON file")
-    repro_parser.add_argument(
-        "-d", "--device",
-        type=int,
-        default=0,
-        help="GPU device index (default: 0)",
-    )
-    repro_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show crash details without executing",
-    )
-    repro_parser.set_defaults(func=cmd_reproduce)
-
-    # info command
-    info_parser = subparsers.add_parser("info", help="Show system information")
-    info_parser.set_defaults(func=cmd_info)
-
-    args = parser.parse_args()
-    return args.func(args)
+        return args.fn(args)
+    except json.JSONDecodeError as e:
+        return _envelope(args.cmd, error=_err("bad_json", str(e)))
 
 
 if __name__ == "__main__":

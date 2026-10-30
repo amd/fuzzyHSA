@@ -12,6 +12,7 @@ Usage:
 This will generate src/fuzzyHSA/kfd/autogen/kfd.py from /usr/include/linux/kfd_ioctl.h
 """
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -44,15 +45,20 @@ def find_kfd_header() -> Path | None:
     return None
 
 
+def _ctypesgen_cmd() -> list[str] | None:
+    """Locate the ctypesgen console script. `python -m ctypesgen` does NOT work
+    (the package ships no __main__), so the console entry point is the only path."""
+    exe = shutil.which("ctypesgen")
+    return [exe] if exe else None
+
+
 def check_ctypesgen() -> bool:
     """Check if ctypesgen is installed."""
+    cmd = _ctypesgen_cmd()
+    if cmd is None:
+        return False
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "ctypesgen", "--version"],
-            capture_output=True,
-            text=True,
-        )
-        return result.returncode == 0
+        return subprocess.run(cmd + ["--version"], capture_output=True, text=True).returncode == 0
     except FileNotFoundError:
         return False
 
@@ -65,9 +71,8 @@ def generate_kfd_bindings(header: Path, output: Path) -> bool:
     # Ensure output directory exists
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    # Run ctypesgen
-    cmd = [
-        sys.executable, "-m", "ctypesgen",
+    # Run ctypesgen via its console script (see _ctypesgen_cmd)
+    cmd = _ctypesgen_cmd() + [
         str(header),
         "-o", str(output),
         "--no-macro-warnings",

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fuzzyHSA"
-version = "0.2.0"
+version = "0.3.0"
 description = "KFD/GPU Firmware Fuzzer for AMD GPUs"
 authors = [{name = "Zachary Streeter"}]
 readme = "README.md"

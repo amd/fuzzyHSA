@@ -26,6 +26,9 @@ _libc.mmap.restype = ctypes.c_void_p
 _libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
 _libc.munmap.restype = ctypes.c_int
 
+# Python's mmap module doesn't expose MAP_FIXED on all platforms; it's 0x10 on Linux.
+MAP_FIXED = getattr(mmap, "MAP_FIXED", 0x10)
+
 
 @dataclass
 class MemoryRegion:
@@ -167,6 +170,8 @@ def map_to_gpu_memory(device: KFDDevice, mem: GPUMemory) -> None:
 
     ioctls = get_ioctls()
 
+    if device.gpu_id in mem.gpu_ids:
+        return  # already mapped to this GPU; re-mapping would double-count gpu_ids
     mem.gpu_ids.append(device.gpu_id)
     gpu_array = (ctypes.c_int32 * len(mem.gpu_ids))(*mem.gpu_ids)
 
@@ -179,6 +184,66 @@ def map_to_gpu_memory(device: KFDDevice, mem: GPUMemory) -> None:
 
     if result.n_success != len(mem.gpu_ids):
         raise RuntimeError(f"Map failed: {result.n_success}/{len(mem.gpu_ids)} succeeded")
+
+
+def alloc_gtt(device: KFDDevice, size: int, cpu_access: bool = True,
+              coherent: bool = False, executable: bool = False,
+              vram: bool = False) -> GPUMemory:
+    """Allocate a GTT buffer the CPU and GPU share.
+
+    ``cpu_access`` re-maps the SAME virtual address over the GTT backing (MAP_FIXED +
+    the kernel-returned ``mmap_offset`` against the DRM fd, the tinygrad pattern) so the
+    CPU can read/write it.
+
+    ``coherent`` adds COHERENT|UNCACHED so the GPU's writes are immediately visible to
+    the CPU. Use it ONLY for buffers the GPU WRITES and the CPU reads back (signal, dst):
+    applying it to the ring makes the CP's fetcher fault (observed: CPF permission fault),
+    because the ring/rptr-wptr the CP reads must stay in the default cacheable path.
+    """
+    from .autogen import kfd as k
+
+    domain = k.KFD_IOC_ALLOC_MEM_FLAGS_VRAM if vram else k.KFD_IOC_ALLOC_MEM_FLAGS_GTT
+    # NO_SUBSTITUTE on every buffer (as ROCr/tinygrad do): without it the kernel may migrate
+    # the backing after the GPU mapping, so the CP reads stale physical memory.
+    flags = domain | k.KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE | k.KFD_IOC_ALLOC_MEM_FLAGS_NO_SUBSTITUTE
+    if cpu_access:
+        # PUBLIC makes the BO CPU-mmappable via the DRM node. WITHOUT it the MAP_FIXED
+        # remap does not back the BO, so CPU and GPU address the SAME va but DIFFERENT
+        # physical memory — the GPU drains a zero ring (rptr advances, no fault) and no
+        # write is ever visible. This is required on every CPU-shared buffer.
+        flags |= k.KFD_IOC_ALLOC_MEM_FLAGS_PUBLIC
+    if coherent:
+        # COHERENT|UNCACHED: GPU writes visible to the CPU.
+        flags |= k.KFD_IOC_ALLOC_MEM_FLAGS_COHERENT | k.KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED
+    if executable:
+        # the CP fetches/EXECUTES PM4 from these BOs. EXECUTABLE alone made the CP fetcher
+        # fault earlier; it needs NO_SUBSTITUTE alongside it (the ROCr/tinygrad combination).
+        flags |= k.KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE | k.KFD_IOC_ALLOC_MEM_FLAGS_NO_SUBSTITUTE
+    from .ioctl import get_ioctls
+
+    ioctls = get_ioctls()
+    region = mmap_anonymous(size, prot=0)
+    try:
+        res = ioctls.alloc_memory_of_gpu(
+            device.kfd_fd, va_addr=region.addr, size=size,
+            gpu_id=device.gpu_id, flags=flags, mmap_offset=0,
+        )
+        mem = GPUMemory(region=region, handle=res.handle)
+        map_to_gpu_memory(device, mem)
+        if cpu_access:
+            # remap the reserved VA onto the GTT backing so CPU stores are visible to the GPU
+            p = _libc.mmap(
+                ctypes.c_void_p(region.addr), size,
+                mmap.PROT_READ | mmap.PROT_WRITE,
+                mmap.MAP_SHARED | MAP_FIXED, device.drm_fd, res.mmap_offset,
+            )
+            if p == ctypes.c_void_p(-1).value:
+                errno = ctypes.get_errno()
+                raise OSError(errno, os.strerror(errno))
+        return mem
+    except Exception:
+        region.unmap()
+        raise
 
 
 def free_gpu_memory(device: KFDDevice, mem: GPUMemory) -> None:

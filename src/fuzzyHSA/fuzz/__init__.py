@@ -1,37 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Fuzzing framework for KFD/GPU testing."""
+"""PM4 case generation (structured, spec-driven mutation)."""
 
-from .harness import FuzzHarness, HarnessConfig
-from .mutators import (
-    ArithmeticMutator,
-    BitflipMutator,
-    BoundaryMutator,
-    ByteflipMutator,
-    CompositeMutator,
-    Mutator,
-    ZeroMutator,
-)
-from .targets import FuzzTarget, IoctlTarget
-from .types import FuzzCase, FuzzResult, FuzzStats, FuzzStatus
+from .gen import MAPPED, GenCase, Pm4Generator
 
-__all__ = [
-    # Types
-    "FuzzCase",
-    "FuzzResult",
-    "FuzzStatus",
-    "FuzzStats",
-    # Mutators
-    "Mutator",
-    "BitflipMutator",
-    "ByteflipMutator",
-    "BoundaryMutator",
-    "ArithmeticMutator",
-    "ZeroMutator",
-    "CompositeMutator",
-    # Harness
-    "FuzzHarness",
-    "HarnessConfig",
-    # Targets
-    "FuzzTarget",
-    "IoctlTarget",
-]
+__all__ = ["Pm4Generator", "GenCase", "MAPPED"]
