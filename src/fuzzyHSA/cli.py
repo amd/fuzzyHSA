@@ -186,6 +186,45 @@ def cmd_isolation_start(args) -> int:
     })
 
 
+def _reexec_cmd(args, fn_name):
+    """Shared wiring for repro/minimize: claim the GPU, run the replay fn, release."""
+    p = _load_json_arg(args.json)
+    from .campaign import replay
+    from .campaign.guard import Denied, Guard
+    from .hw.rocm import rocm_showpids
+    gpu_index = int(p.get("gpu_index", 0))
+    rec = _recorder(args, p)
+    guard = Guard()
+    try:
+        guard.claim_gpu(gpu_index, f"replay-{fn_name}", rocm_showpids)
+    except Denied as d:
+        return _envelope(f"campaign.{fn_name}", error=_err(d.code, str(d)))
+    try:
+        out = getattr(replay, fn_name)(gpu_index, rec, p.get("id"))
+    finally:
+        guard.release_gpu(gpu_index)
+    if isinstance(out, dict) and "error" in out:          # a missing/non-rerunnable id is a real error
+        return _envelope(f"campaign.{fn_name}", error=_err(out["error"], out.get("note", out["error"])))
+    return _envelope(f"campaign.{fn_name}", out)
+
+
+def cmd_campaign_repro(args) -> int:
+    return _reexec_cmd(args, "repro")
+
+
+def cmd_campaign_minimize(args) -> int:
+    return _reexec_cmd(args, "minimize")
+
+
+def cmd_campaign_coverage(args) -> int:
+    """What a campaign exercised + the gaps: packets/fields/classes hit, and what is still dark."""
+    from .campaign.coverage import coverage
+    from .pm4.spec import REGISTRY
+    p = _load_json_arg(args.json)
+    cov = coverage(_recorder(args, p).case_records(), REGISTRY)
+    return _envelope("campaign.coverage", cov)
+
+
 def cmd_campaign_status(args) -> int:
     p = _load_json_arg(args.json)
     s = _recorder(args, p).summary()
@@ -202,7 +241,8 @@ def main(argv=None) -> int:
     for name, fn in [
         ("decode", cmd_decode), ("spec-validate", cmd_spec_validate),
         ("campaign-start", cmd_campaign_start), ("campaign-status", cmd_campaign_status),
-        ("isolation-start", cmd_isolation_start),
+        ("campaign-coverage", cmd_campaign_coverage), ("campaign-repro", cmd_campaign_repro),
+        ("campaign-minimize", cmd_campaign_minimize), ("isolation-start", cmd_isolation_start),
         ("findings-list", cmd_findings_list), ("findings-get", cmd_findings_get),
     ]:
         sp = sub.add_parser(name)

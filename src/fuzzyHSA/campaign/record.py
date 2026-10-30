@@ -102,6 +102,27 @@ class Recorder:
             consumed += len(raw)
         return out, offset + consumed
 
+    def case_records(self) -> list[dict]:
+        """Per-case merged view: the recipe (carried on the ``pending`` line) joined with the
+        latest cls/status/finding (from the ``resolved`` line). Coverage and repro need both,
+        which ``_latest`` alone drops (it keeps only the newest line, i.e. the resolved one)."""
+        merged: dict[str, dict] = {}
+        if not self.manifest.exists():
+            return []
+        for line in self.manifest.read_text().splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            m = merged.setdefault(r["id"], {"id": r["id"]})
+            m["status"] = r["status"]
+            if "recipe" in r:
+                m["recipe"] = r["recipe"]
+            if r["status"] == "resolved":
+                m["cls"] = r.get("cls")
+                m["dedup_sig"] = r.get("dedup_sig")
+                m["finding"] = r.get("finding")
+        return list(merged.values())
+
     def buckets(self) -> dict[str, dict]:
         """One row per dedup bucket: ``sig -> {dedup_sig, cls, count, exemplar_id}``.
         Counts ALL resolved finding cases; the exemplar holds the full record."""
